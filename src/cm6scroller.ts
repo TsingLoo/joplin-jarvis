@@ -4,11 +4,13 @@ import { Decoration, EditorView, ViewPlugin, WidgetType, keymap } from '@codemir
 import {
 	MAX_AUTOCOMPLETE_MESSAGE_CHARS,
 	MAX_AUTOCOMPLETE_SUFFIX_CHARS,
+	getAutocompleteContextStart,
 	createAutocompleteRequestId,
 	createAutocompleteIndicator,
 } from './autocompleteShared';
 
 const setInlineSuggestion = StateEffect.define<{ from: number; text: string } | null>();
+const setAutocompleteContext = StateEffect.define<Array<{ from: number; to: number }> | null>();
 class InlineSuggestionWidget extends WidgetType {
 	constructor(readonly text: string) { super(); }
 	toDOM(): HTMLElement {
@@ -35,6 +37,22 @@ const inlineSuggestionField = StateField.define<{ from: number; text: string } |
 			widget: new InlineSuggestionWidget(suggestion.text),
 			side: 1,
 		}).range(suggestion.from))
+		: Decoration.none),
+});
+
+const autocompleteContextField = StateField.define<Array<{ from: number; to: number }> | null>({
+	create: () => null,
+	update(value, transaction) {
+		if (transaction.docChanged || transaction.selection) return null;
+		for (const effect of transaction.effects) {
+			if (effect.is(setAutocompleteContext)) return effect.value;
+		}
+		return value;
+	},
+	provide: field => EditorView.decorations.from(field, ranges => ranges?.length
+		? Decoration.set(ranges
+			.filter(range => range.to > range.from)
+			.map(range => Decoration.mark({ class: 'jarvis-autocomplete-context' }).range(range.from, range.to)), true)
 		: Decoration.none),
 });
 
@@ -77,6 +95,7 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 			this.cancelPending();
 			this.pendingDocumentText = null;
 			this.waitingForCompositionEnd = false;
+			this.clearRequestContext();
 			const suggestion = this.view.state.field(inlineSuggestionField, false);
 			if (suggestion) this.view.dispatch({ effects: setInlineSuggestion.of(null) });
 			this.setStatus(options.enabled ? 'enabled' : 'disabled');
@@ -106,7 +125,7 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 					this.waitingForCompositionEnd = false;
 					let hasInsertedText = false;
 					update.changes.iterChanges((_fromA: number, _toA: number, _fromB: number, _toB: number, inserted: any) => {
-						if (inserted.length > 0) hasInsertedText = true;
+						if (inserted.toString().trim().length > 0) hasInsertedText = true;
 					});
 					if (!hasInsertedText) {
 						this.pendingDocumentText = null;
@@ -148,6 +167,12 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 			}
 		}
 
+		private clearRequestContext() {
+			if (this.view.state.field(autocompleteContextField, false)?.length) {
+				this.view.dispatch({ effects: setAutocompleteContext.of(null) });
+			}
+		}
+
 		private async requestSuggestion() {
 			this.timer = null;
 			if (!options.enabled) {
@@ -183,6 +208,11 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 			const version = this.requestVersion;
 			const requestId = createAutocompleteRequestId();
 			this.activeRequestId = requestId;
+			const prefixStart = cursor - prefix.length;
+			const contextStart = prefixStart + getAutocompleteContextStart(prefix, options.contextChars);
+			const contextRanges = [{ from: contextStart, to: cursor }];
+			if (suffix.trim()) contextRanges.push({ from: cursor, to: cursor + suffix.length });
+			this.view.dispatch({ effects: setAutocompleteContext.of(contextRanges) });
 			let noteId: string | undefined;
 			try {
 				const facet = editorControl?.joplinExtensions?.noteIdFacet;
@@ -190,9 +220,10 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 			} catch { /* Older Joplin versions may not expose the note ID facet. */ }
 
 			try {
-				const result = await context.postMessage({ type: 'jarvis.inlineAutocomplete', prefix, suffix, noteId, requestId });
+				const result = await context.postMessage({ type: 'jarvis.inlineAutocomplete', prefix, suffix, noteId, requestId, contextChars: options.contextChars });
 				if (this.activeRequestId === requestId) this.activeRequestId = null;
 				if (this.destroyed || version !== this.requestVersion) return;
+				this.clearRequestContext();
 				if (!result?.text) {
 					this.setStatus('enabled');
 					return;
@@ -207,6 +238,7 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 			} catch (error) {
 				if (this.activeRequestId === requestId) this.activeRequestId = null;
 				if (this.destroyed || version !== this.requestVersion) return;
+				this.clearRequestContext();
 				this.setStatus('enabled');
 				console.debug('Jarvis: inline autocomplete request failed', error);
 			} finally {
@@ -246,6 +278,7 @@ export default (context: ContentScriptContext): MarkdownEditorContentScriptModul
 			const autocompletePlugin = createInlineAutocompletePlugin(context, editorControl, options);
 			editorControl.addExtension([
 				inlineSuggestionField,
+				autocompleteContextField,
 				autocompletePlugin,
 				Prec.highest(keymap.of([{
 					key: 'Tab',

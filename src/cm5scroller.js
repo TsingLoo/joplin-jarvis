@@ -2,6 +2,7 @@
 var autocomplete = require('./autocompleteShared');
 var MAX_AUTOCOMPLETE_MESSAGE_CHARS = autocomplete.MAX_AUTOCOMPLETE_MESSAGE_CHARS;
 var MAX_AUTOCOMPLETE_SUFFIX_CHARS = autocomplete.MAX_AUTOCOMPLETE_SUFFIX_CHARS;
+var getAutocompleteContextStart = autocomplete.getAutocompleteContextStart;
 var createAutocompleteRequestId = autocomplete.createAutocompleteRequestId;
 var createAutocompleteIndicator = autocomplete.createAutocompleteIndicator;
 
@@ -14,6 +15,7 @@ function plugin(CodeMirror, context) {
     var requestVersion = 0;
     var pendingPosition = null;
     var suggestionMark = null;
+    var contextMarks = [];
     var suggestionText = '';
     var lastDocumentText = cm.getValue();
     var pendingDocumentText = null;
@@ -37,10 +39,29 @@ function plugin(CodeMirror, context) {
       timer = null;
       pendingPosition = null;
       pendingDocumentText = null;
+      clearContextMarks();
       if (activeRequestId) {
         var requestId = activeRequestId;
         activeRequestId = null;
         context.postMessage({ type: 'jarvis.inlineAutocomplete.cancel', requestId: requestId }).catch(function() {});
+      }
+    }
+
+    function clearContextMarks() {
+      contextMarks.forEach(function(mark) { mark.clear(); });
+      contextMarks = [];
+    }
+
+    function showContextMarks(prefix, suffix, cursorIndex) {
+      clearContextMarks();
+      var contextStart = cursorIndex - prefix.length + getAutocompleteContextStart(prefix, options.contextChars);
+      var contextEnd = cursorIndex;
+      if (contextEnd > contextStart) {
+        contextMarks.push(cm.markText(cm.posFromIndex(contextStart), cm.posFromIndex(contextEnd), { className: 'jarvis-autocomplete-context' }));
+      }
+      var boundedSuffixLength = Math.min(suffix.length, MAX_AUTOCOMPLETE_SUFFIX_CHARS);
+      if (suffix.slice(0, boundedSuffixLength).trim()) {
+        contextMarks.push(cm.markText(cm.posFromIndex(cursorIndex), cm.posFromIndex(cursorIndex + boundedSuffixLength), { className: 'jarvis-autocomplete-context' }));
       }
     }
 
@@ -80,7 +101,8 @@ function plugin(CodeMirror, context) {
       }
       var hasInsertedText = Array.isArray(changes)
         ? changes.some(function(change) {
-          return Array.isArray(change.text) ? change.text.join('\n').length > 0 : String(change.text || '').length > 0;
+          var insertedText = Array.isArray(change.text) ? change.text.join('\n') : String(change.text || '');
+          return insertedText.trim().length > 0;
         })
         : currentDocumentText.length > lastDocumentText.length;
       if (!hasInsertedText) {
@@ -134,14 +156,19 @@ function plugin(CodeMirror, context) {
         setStatus('requesting');
         var requestId = createAutocompleteRequestId();
         activeRequestId = requestId;
-        context.postMessage({ type: 'jarvis.inlineAutocomplete', prefix: prefix, suffix: suffix, requestId: requestId }).then(function(result) {
+        showContextMarks(prefix, suffix, pendingPosition);
+        context.postMessage({ type: 'jarvis.inlineAutocomplete', prefix: prefix, suffix: suffix, requestId: requestId, contextChars: options.contextChars }).then(function(result) {
           if (activeRequestId === requestId) activeRequestId = null;
           if (destroyed || version !== requestVersion) return;
+          clearContextMarks();
           if (!result || !result.text) {
             setStatus('enabled');
             return;
           }
-          if (editor.getValue() !== docText || editor.indexFromPos(editor.getCursor('head')) !== pendingPosition || editor.somethingSelected()) return;
+          if (editor.getValue() !== docText || editor.indexFromPos(editor.getCursor('head')) !== pendingPosition || editor.somethingSelected()) {
+            setStatus('enabled');
+            return;
+          }
           var widget = document.createElement('span');
           widget.className = 'jarvis-inline-suggestion';
           widget.textContent = result.text;
@@ -152,6 +179,7 @@ function plugin(CodeMirror, context) {
         }).catch(function(error) {
           if (activeRequestId === requestId) activeRequestId = null;
           if (destroyed || version !== requestVersion) return;
+          clearContextMarks();
           setStatus('enabled');
           console.debug('Jarvis: inline autocomplete request failed', error);
         });

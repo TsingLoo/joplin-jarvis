@@ -425,6 +425,7 @@ async function register_content_scripts(runtime: PluginRuntime): Promise<void> {
           message.prefix,
           typeof message.suffix === 'string' ? message.suffix : '',
           requestController.signal,
+          Number.isFinite(message.contextChars) ? Number(message.contextChars) : undefined,
         ),
       };
     } catch (error) {

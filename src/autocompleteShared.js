@@ -1,5 +1,22 @@
 var MAX_AUTOCOMPLETE_MESSAGE_CHARS = 20000;
 var MAX_AUTOCOMPLETE_SUFFIX_CHARS = 500;
+var MAX_AUTOCOMPLETE_CONTEXT_CHARS = 20000;
+
+function getAutocompleteContextStart(textBeforeCursor, maxChars) {
+  var limit = Math.max(500, Math.min(MAX_AUTOCOMPLETE_CONTEXT_CHARS, Math.floor(maxChars) || 6000));
+  var start = Math.max(0, textBeforeCursor.length - limit);
+  var context = textBeforeCursor.slice(start);
+  var headingPattern = /(^|\n)[ \t]{0,3}#{1,2}(?!#)(?:[ \t]+[^\r\n]*)?[ \t\r]*$/gm;
+  var lastHeadingStart = -1;
+  var match;
+  while ((match = headingPattern.exec(context)) !== null) {
+    var lineStart = match.index + (match[1] ? 1 : 0);
+    // The bounded slice may start halfway through a line; don't treat that as a heading.
+    if (lineStart === 0 && start > 0) continue;
+    lastHeadingStart = lineStart;
+  }
+  return start + (lastHeadingStart >= 0 ? lastHeadingStart : 0);
+}
 
 function createAutocompleteRequestId() {
   return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
@@ -32,6 +49,7 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
       .jarvis-autocomplete-toggle{display:flex;align-items:center;gap:7px;margin-bottom:10px;cursor:pointer}\
       .jarvis-autocomplete-context-label{display:flex;justify-content:space-between;gap:8px;margin-bottom:4px}\
       .jarvis-autocomplete-context-range{width:100%;margin:0}\
+      .jarvis-autocomplete-context{background:rgba(151,211,139,.12);text-decoration:underline;text-decoration-color:rgba(119,190,105,.72);text-decoration-thickness:1px;text-underline-offset:2px}\
       @keyframes jarvis-sparkle{0%,100%{transform:scale(.92)}50%{transform:scale(1.06)}}\
       @keyframes jarvis-waiting{0%,100%{transform:scale(.96)}50%{transform:scale(1.04)}}\
       @keyframes jarvis-spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}\
@@ -151,6 +169,7 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
 module.exports = {
   MAX_AUTOCOMPLETE_MESSAGE_CHARS: MAX_AUTOCOMPLETE_MESSAGE_CHARS,
   MAX_AUTOCOMPLETE_SUFFIX_CHARS: MAX_AUTOCOMPLETE_SUFFIX_CHARS,
+  getAutocompleteContextStart: getAutocompleteContextStart,
   createAutocompleteRequestId: createAutocompleteRequestId,
   createAutocompleteIndicator: createAutocompleteIndicator,
 };
