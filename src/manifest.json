@@ -1,6 +1,6 @@
 {
 	"manifest_version": 1,
-	"id": "joplin.plugin.alondmnt.jarvis",
+	"id": "joplin.plugin.tsingloo.jarvis",
 	"app_min_version": "3.3",
 	"platforms": ["desktop", "mobile"],
 	"version": "0.14.2",

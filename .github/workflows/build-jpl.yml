@@ -1,0 +1,36 @@
+name: Build JPL
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install --no-package-lock --ignore-scripts
+
+      - name: Build plugin
+        run: npm run dist
+
+      - name: Upload JPL package
+        uses: actions/upload-artifact@v7
+        with:
+          name: joplin.plugin.tsingloo.jarvis.jpl
+          path: publish/joplin.plugin.tsingloo.jarvis.jpl
+          archive: false
+          if-no-files-found: error
