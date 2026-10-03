@@ -1,3 +1,3 @@
 {
-	"extraScripts": ["cm6scroller.ts"]
+	"extraScripts": ["cm5scroller.js", "cm6scroller.ts"]
 }

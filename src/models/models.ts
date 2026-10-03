@@ -1207,6 +1207,9 @@ export class TextGenerationModel {
       throw new Error('Model completion operation cancelled');
     }
     await this.limit_rate();
+    if (abortSignal?.aborted) {
+      throw new Error('Model completion operation cancelled');
+    }
 
     // Set up abort handling for the actual generation operation
     return new Promise((resolve, reject) => {

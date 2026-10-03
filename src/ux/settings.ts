@@ -136,6 +136,8 @@ export interface JarvisSettings {
   annotate_links_flag: boolean;
   annotate_links_title: string;
   annotate_autocomplete_prompt: string;
+  autocomplete_enabled: boolean;
+  autocomplete_context_chars: number;
   annotate_tags_flag: boolean;
   annotate_tags_method: string;
   annotate_tags_max: number;
@@ -995,7 +997,26 @@ export async function register_settings() {
       public: true,
       advanced: true,
       label: 'Annotate: Custom autocomplete prompt',
-      description: 'Optional template for the "Auto-complete with Jarvis" command. Available tokens: {context} (current note content), {placeholder} (continuation marker). Default: empty.',
+      description: 'Optional template for inline suggestions and the "Auto-complete with Jarvis" command. Available tokens: {context} (note context at the cursor or current note content), {placeholder} (continuation marker). Default: empty.',
+    },
+    'autocomplete_enabled': {
+      value: true,
+      type: SettingItemType.Bool,
+      section: 'jarvis.annotate',
+      public: true,
+      label: 'Autocomplete: Enable automatic suggestions',
+      description: 'Show inline autocomplete suggestions while writing. Default: true.',
+    },
+    'autocomplete_context_chars': {
+      value: 6000,
+      type: SettingItemType.Int,
+      minimum: 500,
+      maximum: 20000,
+      step: 500,
+      section: 'jarvis.annotate',
+      public: true,
+      label: 'Autocomplete: Maximum context characters',
+      description: 'Maximum number of characters before the cursor to send for inline autocomplete. Context starts at the nearest # or ## heading within this limit, when present. Default: 6000.',
     },
     'annotate_tags_flag': {
       value: true,

@@ -16,7 +16,7 @@ import { read_model_metadata } from './notes/catalogMetadataStore';
 import { register_panel, update_panel } from './ux/panel';
 import { get_settings, register_settings, set_folders, get_model_last_sweep_time, get_model_last_full_sweep_time, GENERATION_SETTING_KEYS, EMBEDDING_SETTING_KEYS } from './ux/settings';
 import type { JarvisSettings } from './ux/settings';
-import { auto_complete } from './commands/complete';
+import { auto_complete, generate_inline_completion } from './commands/complete';
 import { getLogger } from './utils/logger';
 import type { ModelCoverageStats, ModelSwitchDecision } from './notes/modelSwitch';
 import {
@@ -111,7 +111,7 @@ joplin.plugins.register({
 
     // Phase 2: Register all commands, menus, and UI elements
     // Do this BEFORE loading models so users always see the UI
-    await register_content_scripts();
+    await register_content_scripts(runtime);
     await register_commands_and_menus(runtime, updates, find_notes_debounce);
     await register_workspace_listeners(runtime, updates, find_notes_debounce);
     await register_settings_handler(runtime, updates, find_notes_debounce);
@@ -369,7 +369,78 @@ async function run_initial_sweep(runtime: PluginRuntime, updates: UpdateManager)
 /**
  * Register editor content scripts for scrolling support.
  */
-async function register_content_scripts(): Promise<void> {
+async function register_content_scripts(runtime: PluginRuntime): Promise<void> {
+  const inlineAutocompleteRequests = new Map<string, AbortController>();
+  const handleAutocompleteRequest = async (message: any) => {
+    if (message?.type === 'jarvis.inlineAutocomplete.cancel') {
+      const requestId = typeof message.requestId === 'string' ? message.requestId : '';
+      if (requestId) inlineAutocompleteRequests.get(requestId)?.abort();
+      return { cancelled: true };
+    }
+
+    const requestId = typeof message?.requestId === 'string' ? message.requestId : '';
+    let requestController: AbortController | null = null;
+    try {
+      if (message?.type === 'jarvis.autocomplete.getOptions') {
+        return {
+          enabled: runtime.settings.autocomplete_enabled,
+          contextChars: runtime.settings.autocomplete_context_chars,
+        };
+      }
+
+      if (message?.type === 'jarvis.autocomplete.setEnabled' && typeof message.enabled === 'boolean') {
+        await joplin.settings.setValue('autocomplete_enabled', message.enabled);
+        runtime.settings = await get_settings();
+        return {
+          enabled: runtime.settings.autocomplete_enabled,
+          contextChars: runtime.settings.autocomplete_context_chars,
+        };
+      }
+
+      if (message?.type === 'jarvis.autocomplete.setContextChars' && Number.isFinite(message.contextChars)) {
+        const contextChars = Math.max(500, Math.min(20000, Math.round(Number(message.contextChars) / 500) * 500));
+        await joplin.settings.setValue('autocomplete_context_chars', contextChars);
+        runtime.settings = await get_settings();
+        return {
+          enabled: runtime.settings.autocomplete_enabled,
+          contextChars: runtime.settings.autocomplete_context_chars,
+        };
+      }
+
+      if (message?.type !== 'jarvis.inlineAutocomplete' || typeof message.prefix !== 'string') {
+        return { text: '' };
+      }
+      if (!runtime.settings.autocomplete_enabled) return { text: '' };
+
+      requestController = new AbortController();
+      if (requestId) inlineAutocompleteRequests.set(requestId, requestController);
+      const note = await joplin.workspace.selectedNote();
+      if (requestController.signal.aborted || !note || (message.noteId && note.id !== message.noteId)) {
+        return { text: '' };
+      }
+      return {
+        text: await generate_inline_completion(
+          runtime.model_gen,
+          runtime.settings,
+          message.prefix,
+          typeof message.suffix === 'string' ? message.suffix : '',
+          requestController.signal,
+        ),
+      };
+    } catch (error) {
+      if (requestController?.signal.aborted) return { text: '' };
+      runtime.log.warn('Inline autocomplete failed', error);
+      return { text: '' };
+    } finally {
+      if (requestId && requestController && inlineAutocompleteRequests.get(requestId) === requestController) {
+        inlineAutocompleteRequests.delete(requestId);
+      }
+    }
+  };
+
+  await joplin.contentScripts.onMessage('jarvis.cm5scroller', handleAutocompleteRequest);
+  await joplin.contentScripts.onMessage('jarvis.cm6scroller', handleAutocompleteRequest);
+
   await joplin.contentScripts.register(
     ContentScriptType.CodeMirrorPlugin,
     'jarvis.cm5scroller',
@@ -680,7 +751,18 @@ async function register_commands_and_menus(
 
   await joplin.views.menuItems.create('jarvis.context.notes.find', 'jarvis.notes.find', MenuItemLocation.EditorContextMenu);
   await joplin.views.menuItems.create('jarvis.context.utils.count_tokens', 'jarvis.utils.count_tokens', MenuItemLocation.EditorContextMenu);
-  await joplin.views.menuItems.create('jarvis.context.edit', 'jarvis.edit', MenuItemLocation.EditorContextMenu);
+  joplin.workspace.filterEditorContextMenu(async (menu) => {
+    let selectedText = '';
+    try {
+      selectedText = await joplin.commands.execute('selectedText');
+    } catch {
+      // The editor may not have a readable selection while its context menu opens.
+    }
+    if (selectedText && !menu.items.some(item => item.commandName === 'jarvis.edit')) {
+      menu.items.push({ commandName: 'jarvis.edit', label: 'Edit selection with Jarvis' });
+    }
+    return menu;
+  });
 }
 
 /**

@@ -22,7 +22,7 @@ Community discussion: https://discourse.joplinapp.org/t/28316
 - **Literature review:**
     - Run the command `Research with Jarvis`, write what you're interested in, and optionally adjust the search parameters. Wait 2-3 minutes for all the output to appear in the note (depending on internet traffic). Jarvis will update the content as it finds new information on the web (using Semantic Scholar, Crossref, Elsevier, Springer & Wikipedia databases). In the end you will get a report with the following sections: title, prompt, research questions, queries, references, review and follow-up questions. For more information see [this post](https://medium.com/@alondmnt/ai-powered-literature-review-6918ee180304).
 - **Autocomplete anything:**
-    - `Auto-complete with Jarvis` will try to extend any text at the current cursor position in the editor.
+    - After you stop typing for about 0.8 seconds, Jarvis shows an inline continuation at the cursor. Press `Tab` to accept it. Hover or click the Jarvis indicator in the editor to enable or disable automatic suggestions and adjust their context size. `Auto-complete with Jarvis` remains available to extend text on demand.
 - **Text generation:**
     - Run the command `Ask Jarvis` and write your query in the pop-up window, or select a prompt text in the editor before running the command. You can also enhance your query with predefined (or customized) prompt templates from the dropdown lists.
 - **Text editing:**
