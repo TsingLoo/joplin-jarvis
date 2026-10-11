@@ -11,10 +11,33 @@ import { load_embedding_model, load_generation_model } from './models/models';
 import type { TextEmbeddingModel, TextGenerationModel } from './models/models';
 import { find_nearest_notes, clear_corpus_cache } from './notes/embeddings';
 import { search_by_query } from './notes/searchOrchestration';
+import {
+  clear_exclusion_status_cache,
+  exclude_note,
+  exclusion_confirmation,
+  get_cached_exclusion_status,
+  get_note_exclusion_status,
+  include_note,
+  show_excluded_notice,
+} from './notes/exclusion';
+import { clear_excluded_note_ids_cache } from './notes/noteHelpers';
+import { clear_folder_exclusion_cache } from './notes/folderExclusion';
 import { ensure_catalog_note, get_catalog_note_id } from './notes/catalog';
 import { read_model_metadata } from './notes/catalogMetadataStore';
 import { register_panel, update_panel } from './ux/panel';
-import { get_settings, register_settings, set_folders, get_model_last_sweep_time, get_model_last_full_sweep_time, GENERATION_SETTING_KEYS, EMBEDDING_SETTING_KEYS } from './ux/settings';
+import {
+  get_settings,
+  register_settings,
+  set_folders,
+  get_model_last_sweep_time,
+  get_model_last_full_sweep_time,
+  autocomplete_default_for_untouched,
+  autocomplete_for_note,
+  get_autocomplete_note_overrides,
+  set_autocomplete_for_note,
+  GENERATION_SETTING_KEYS,
+  EMBEDDING_SETTING_KEYS,
+} from './ux/settings';
 import type { JarvisSettings } from './ux/settings';
 import { auto_complete, generate_inline_completion } from './commands/complete';
 import { getLogger } from './utils/logger';
@@ -369,9 +392,111 @@ async function run_initial_sweep(runtime: PluginRuntime, updates: UpdateManager)
 /**
  * Register editor content scripts for scrolling support.
  */
+/**
+ * Per-note autocomplete switches, cached because the indicator re-reads them on
+ * every note change. Kept at module scope so the note-change listener that
+ * prunes deleted notes shares the same copy.
+ */
+let autocompleteNoteOverrides: Record<string, boolean> | null = null;
+
+async function autocomplete_overrides(): Promise<Record<string, boolean>> {
+  if (!autocompleteNoteOverrides) {
+    autocompleteNoteOverrides = await get_autocomplete_note_overrides();
+  }
+  return autocompleteNoteOverrides;
+}
+
+async function set_autocomplete_override(note_id: string, enabled: boolean | null): Promise<void> {
+  autocompleteNoteOverrides = await set_autocomplete_for_note(note_id, enabled);
+}
+
 async function register_content_scripts(runtime: PluginRuntime): Promise<void> {
   const inlineAutocompleteRequests = new Map<string, AbortController>();
+
+  /**
+   * The autocomplete options the editor indicator renders.
+   *
+   * `enabled` is the effective state for the note the editor is showing: the
+   * note's own setting when the user has switched autocomplete on or off
+   * there, and the global `autocomplete_enabled` otherwise. `excluded` travels
+   * with it so the editor can tell "you turned this off" apart from "this note
+   * is private", and `exclusionReason` says which kind of exclusion it is: one
+   * the user can lift from the note itself (a tag) or one that belongs to the
+   * notebook or the trash.
+   */
+  const autocomplete_options = async (
+    noteId?: string | null,
+  ): Promise<{
+    enabled: boolean;
+    contextChars: number;
+    excluded: boolean;
+    exclusionReason?: string;
+    noteOverride: boolean;
+  }> => {
+    // The indicator passes the note it is showing for, which is exact; fetching
+    // that note is what makes the answer about the right note when the editor
+    // and the open note disagree. Without it (the CodeMirror 5 editor exposes
+    // no note ID) the open note is the best available answer.
+    let target = noteId ?? null;
+    let note: any = null;
+    if (target) {
+      note = { id: target };
+    } else {
+      try {
+        note = await joplin.workspace.selectedNote();
+        target = note?.id ?? null;
+      } catch (error) {
+        note = null;
+        target = null;
+      }
+    }
+
+    const overrides = await autocomplete_overrides();
+    const noteOverride = !!target && target in overrides;
+
+    let excluded = false;
+    let exclusionReason: string | undefined;
+    if (target) {
+      try {
+        const status = await get_cached_exclusion_status(note, runtime.settings);
+        excluded = status.excluded;
+        exclusionReason = status.reason;
+      } catch (error) {
+        // An unreadable note must not be reported as private
+        excluded = false;
+      }
+    }
+
+    // A note the user has not opened before stays off unless the settings ask
+    // for the opposite; a note carrying a tag is the one case where the switch
+    // is purely its own choice.
+    const enabled = exclusionReason === 'tag'
+      ? (noteOverride ? Boolean(overrides[target as string]) : false)
+      : autocomplete_for_note(overrides, target, autocomplete_default_for_untouched(runtime.settings));
+
+    return {
+      enabled,
+      contextChars: runtime.settings.autocomplete_context_chars,
+      excluded,
+      exclusionReason,
+      noteOverride,
+    };
+  };
+
   const handleAutocompleteRequest = async (message: any) => {
+    const explicitNoteId = typeof message?.noteId === 'string' && message.noteId ? message.noteId : null;
+    // Switching the note's autocomplete off needs a note to attach it to, so
+    // fall back to the open note when the editor does not know its own ID
+    const noteForMessage = async (): Promise<string | null> => {
+      if (explicitNoteId) {
+        return explicitNoteId;
+      }
+      try {
+        return (await joplin.workspace.selectedNote())?.id ?? null;
+      } catch (error) {
+        return null;
+      }
+    };
     if (message?.type === 'jarvis.inlineAutocomplete.cancel') {
       const requestId = typeof message.requestId === 'string' ? message.requestId : '';
       if (requestId) inlineAutocompleteRequests.get(requestId)?.abort();
@@ -382,40 +507,42 @@ async function register_content_scripts(runtime: PluginRuntime): Promise<void> {
     let requestController: AbortController | null = null;
     try {
       if (message?.type === 'jarvis.autocomplete.getOptions') {
-        return {
-          enabled: runtime.settings.autocomplete_enabled,
-          contextChars: runtime.settings.autocomplete_context_chars,
-        };
+        return await autocomplete_options(explicitNoteId);
       }
 
       if (message?.type === 'jarvis.autocomplete.setEnabled' && typeof message.enabled === 'boolean') {
-        await joplin.settings.setValue('autocomplete_enabled', message.enabled);
+        const noteId = await noteForMessage();
+        if (noteId) {
+          // Per note, so switching it off here leaves other notes alone
+          await set_autocomplete_override(noteId, message.enabled);
+        } else {
+          // No note to attach it to: the setting is the only thing that can
+          // express it
+          await joplin.settings.setValue('autocomplete_enabled', message.enabled);
+        }
         runtime.settings = await get_settings();
-        return {
-          enabled: runtime.settings.autocomplete_enabled,
-          contextChars: runtime.settings.autocomplete_context_chars,
-        };
-      }
-
-      if (message?.type === 'jarvis.autocomplete.setContextChars' && Number.isFinite(message.contextChars)) {
-        const contextChars = Math.max(500, Math.min(20000, Math.round(Number(message.contextChars) / 500) * 500));
-        await joplin.settings.setValue('autocomplete_context_chars', contextChars);
-        runtime.settings = await get_settings();
-        return {
-          enabled: runtime.settings.autocomplete_enabled,
-          contextChars: runtime.settings.autocomplete_context_chars,
-        };
+        return await autocomplete_options(explicitNoteId);
       }
 
       if (message?.type !== 'jarvis.inlineAutocomplete' || typeof message.prefix !== 'string') {
         return { text: '' };
       }
-      if (!runtime.settings.autocomplete_enabled) return { text: '' };
+      // The note's own switch decides, falling back to the default for a note
+      // the user has not opened before
+      const inlineNoteId = await noteForMessage();
+      const inlineEnabled = autocomplete_for_note(
+        await autocomplete_overrides(), inlineNoteId, autocomplete_default_for_untouched(runtime.settings));
+      if (!inlineEnabled) return { text: '' };
 
       requestController = new AbortController();
       if (requestId) inlineAutocompleteRequests.set(requestId, requestController);
       const note = await joplin.workspace.selectedNote();
       if (requestController.signal.aborted || !note || (message.noteId && note.id !== message.noteId)) {
+        return { text: '' };
+      }
+      // An excluded note never reaches a model, and inline suggestions run
+      // unattended, so this fails quietly instead of opening a dialog.
+      if (await current_note_is_excluded(runtime, note)) {
         return { text: '' };
       }
       return {
@@ -454,6 +581,65 @@ async function register_content_scripts(runtime: PluginRuntime): Promise<void> {
   );
 }
 
+async function selected_notebook(): Promise<any | null> {
+  try {
+    // Absent on platforms without a notebook list (mobile/web)
+    return await joplin.workspace.selectedFolder();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the note open in the editor is excluded from Jarvis.
+ *
+ * `note` can be passed when the caller already has it. Answers false when the
+ * note cannot be read, so a transient failure never presents a note as private.
+ * Callers that only need the verdict (the inline autocomplete paths) use this;
+ * callers that also have to explain it use `note_is_excluded`.
+ */
+async function current_note_is_excluded(runtime: PluginRuntime, note?: any): Promise<boolean> {
+  try {
+    const target = note ?? await joplin.workspace.selectedNote();
+    if (!target) {
+      return false;
+    }
+    return (await get_cached_exclusion_status(target, runtime.settings)).excluded;
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * Refuse to run a command on a note the user excluded from Jarvis.
+ *
+ * Exclusion is a promise that the note is never sent to a model, and the
+ * commands that send the open note's body are exactly the ones a user would
+ * trigger by habit, so they check it rather than trusting the note DB filter,
+ * which only governs collection-wide retrieval. Returns true when the caller
+ * should stop.
+ */
+async function note_is_excluded(runtime: PluginRuntime, note: any): Promise<boolean> {
+  if (!note?.id) {
+    return false;
+  }
+  const status = await get_cached_exclusion_status(note, runtime.settings);
+  if (!status.excluded) {
+    return false;
+  }
+  let parent_title: string | undefined;
+  if (status.reason === 'folder' && note.parent_id) {
+    try {
+      const folder = await joplin.data.get(['folders', note.parent_id], { fields: ['title'] });
+      parent_title = folder?.title;
+    } catch {
+      parent_title = undefined;
+    }
+  }
+  await show_excluded_notice({ kind: 'note', title: note.title || 'Untitled', parent_title }, status);
+  return true;
+}
+
 /**
  * Register all commands, menus, and toolbar buttons used by the plugin.
  */
@@ -475,6 +661,7 @@ async function register_commands_and_menus(
     label: 'Chat with Jarvis',
     iconName: 'fas fa-robot',
     execute: async () => {
+      if (await note_is_excluded(runtime, await joplin.workspace.selectedNote())) { return; }
       await chat_with_jarvis(runtime.model_gen);
     },
   });
@@ -492,6 +679,7 @@ async function register_commands_and_menus(
     label: 'Edit selection with Jarvis',
     iconName: 'far fa-edit',
     execute: async () => {
+      if (await note_is_excluded(runtime, await joplin.workspace.selectedNote())) { return; }
       await edit_with_jarvis(runtime.model_gen, runtime.dialogAsk);
     },
   });
@@ -501,6 +689,7 @@ async function register_commands_and_menus(
     label: 'Auto-complete with Jarvis',
     iconName: 'fas fa-magic',
     execute: async () => {
+      if (await note_is_excluded(runtime, await joplin.workspace.selectedNote())) { return; }
       await auto_complete(runtime.model_gen, runtime.settings);
     },
   });
@@ -509,6 +698,7 @@ async function register_commands_and_menus(
     name: 'jarvis.annotate.title',
     label: 'Annotate note: title',
     execute: async () => {
+      if (await note_is_excluded(runtime, await joplin.workspace.selectedNote())) { return; }
       await annotate_title(runtime.model_gen, runtime.settings);
     },
   });
@@ -517,6 +707,7 @@ async function register_commands_and_menus(
     name: 'jarvis.annotate.summary',
     label: 'Annotate note: summary',
     execute: async () => {
+      if (await note_is_excluded(runtime, await joplin.workspace.selectedNote())) { return; }
       await annotate_summary(runtime.model_gen, runtime.settings);
     },
   });
@@ -525,6 +716,7 @@ async function register_commands_and_menus(
     name: 'jarvis.annotate.tags',
     label: 'Annotate note: tags',
     execute: async () => {
+      if (await note_is_excluded(runtime, await joplin.workspace.selectedNote())) { return; }
       await annotate_tags(runtime.model_gen, runtime.model_embed, runtime.settings);
     },
   });
@@ -533,6 +725,7 @@ async function register_commands_and_menus(
     name: 'jarvis.annotate.links',
     label: 'Annotate note: links',
     execute: async () => {
+      if (await note_is_excluded(runtime, await joplin.workspace.selectedNote())) { return; }
       await annotate_links(runtime.model_embed, runtime.settings);
     },
   });
@@ -542,6 +735,7 @@ async function register_commands_and_menus(
     label: 'Annotate note with Jarvis',
     iconName: 'fas fa-lightbulb',
     execute: async () => {
+      if (await note_is_excluded(runtime, await joplin.workspace.selectedNote())) { return; }
       const settings = runtime.settings;
       if (settings.annotate_links_flag) {
         await annotate_links(runtime.model_embed, settings);
@@ -632,6 +826,9 @@ async function register_commands_and_menus(
     label: 'Chat with your notes',
     iconName: 'fas fa-comments',
     execute: async () => {
+      // The open note supplies the search query and the conversation itself,
+      // so an excluded note is refused here as well as in the panel's note mode
+      if (await note_is_excluded(runtime, await joplin.workspace.selectedNote())) { return; }
       if (runtime.model_embed.model === null) {
         await runtime.model_embed.initialize();
       }
@@ -662,25 +859,85 @@ async function register_commands_and_menus(
 
   await joplin.commands.register({
     name: 'jarvis.notes.exclude_folder',
-    label: 'Exclude notebook from note DB',
+    label: 'Exclude notebook from Jarvis (with its sub-notebooks)',
     execute: async () => {
-      const folder = await joplin.workspace.selectedFolder();
+      const folder = await selected_notebook();
       if (!folder) {
+        await joplin.views.dialogs.showMessageBox('Jarvis: select a notebook first (in the notebook list), then run this command again.');
         return;
       }
-      set_folders(true, folder.id, runtime.settings);
+      const alreadyExcluded = runtime.settings.notes_exclude_folders.has(folder.id);
+      await set_folders(true, folder.id, runtime.settings);
+      runtime.settings = await get_settings();
+      clear_folder_exclusion_cache();
+      clear_exclusion_status_cache();
+      await joplin.views.dialogs.showMessageBox(exclusion_confirmation(
+        { kind: 'notebook', title: folder.title },
+        alreadyExcluded ? 'unchanged-excluded' : 'excluded'));
     },
   });
 
   await joplin.commands.register({
     name: 'jarvis.notes.include_folder',
-    label: 'Include notebook in note DB',
+    label: 'Include notebook in Jarvis (with its sub-notebooks)',
     execute: async () => {
-      const folder = await joplin.workspace.selectedFolder();
+      const folder = await selected_notebook();
       if (!folder) {
+        await joplin.views.dialogs.showMessageBox('Jarvis: select a notebook first (in the notebook list), then run this command again.');
         return;
       }
-      set_folders(false, folder.id, runtime.settings);
+      const wasExcluded = runtime.settings.notes_exclude_folders.has(folder.id);
+      await set_folders(false, folder.id, runtime.settings);
+      runtime.settings = await get_settings();
+      clear_folder_exclusion_cache();
+      clear_exclusion_status_cache();
+      await joplin.views.dialogs.showMessageBox(exclusion_confirmation(
+        { kind: 'notebook', title: folder.title },
+        wasExcluded ? 'included' : 'unchanged-included'));
+    },
+  });
+
+  await joplin.commands.register({
+    name: 'jarvis.notes.exclude_note',
+    label: 'Exclude note from Jarvis',
+    execute: async () => {
+      const note = await joplin.workspace.selectedNote();
+      if (!note) {
+        await joplin.views.dialogs.showMessageBox('Jarvis: open the note you want to exclude, then run this command again.');
+        return;
+      }
+      const status = await get_note_exclusion_status(note, runtime.settings);
+      if (status.reason === 'folder') {
+        await show_excluded_notice({ kind: 'note', title: note.title || 'Untitled' }, status);
+        return;
+      }
+      const changed = await exclude_note(note.id);
+      clear_exclusion_status_cache();
+      await joplin.views.dialogs.showMessageBox(exclusion_confirmation(
+        { kind: 'note', title: note.title || 'Untitled' },
+        changed ? 'excluded' : 'unchanged-excluded'));
+    },
+  });
+
+  await joplin.commands.register({
+    name: 'jarvis.notes.include_note',
+    label: 'Include note in Jarvis',
+    execute: async () => {
+      const note = await joplin.workspace.selectedNote();
+      if (!note) {
+        await joplin.views.dialogs.showMessageBox('Jarvis: open the note you want to include, then run this command again.');
+        return;
+      }
+      const status = await get_note_exclusion_status(note, runtime.settings);
+      if (status.reason === 'folder') {
+        await show_excluded_notice({ kind: 'note', title: note.title || 'Untitled' }, status);
+        return;
+      }
+      const changed = await include_note(note.id);
+      clear_exclusion_status_cache();
+      await joplin.views.dialogs.showMessageBox(exclusion_confirmation(
+        { kind: 'note', title: note.title || 'Untitled' },
+        changed ? 'included' : 'unchanged-included'));
     },
   });
 
@@ -707,6 +964,8 @@ async function register_commands_and_menus(
     { commandName: 'jarvis.chat.toggle_panel' },
     { commandName: 'jarvis.notes.exclude_folder' },
     { commandName: 'jarvis.notes.include_folder' },
+    { commandName: 'jarvis.notes.exclude_note' },
+    { commandName: 'jarvis.notes.include_note' },
   ], MenuItemLocation.Tools);
 
   const toolbarSettingKeys = [
@@ -868,7 +1127,15 @@ async function register_workspace_listeners(
     if (!noteId) {
       return;
     }
+    // A tag added or removed anywhere invalidates the cached exclusion verdicts
     runtime.pending_note_ids.add(noteId);
+    clear_exclusion_status_cache();
+    clear_excluded_note_ids_cache();
+    // ItemChangeEventType.Delete (3): the note's own autocomplete switch goes
+    // with it, so the map does not grow with notes that no longer exist
+    if (event?.event === 3 && (await autocomplete_overrides())[noteId] !== undefined) {
+      await set_autocomplete_override(noteId, null);
+    }
   });
 
   await joplin.workspace.onSyncComplete(async () => {
@@ -939,6 +1206,11 @@ async function register_settings_handler(
 
     // Check if excluded folders changed - invalidate cache to reload with new filter
     const excludedFoldersChanged = event.keys.includes('notes_exclude_folders');
+    if (excludedFoldersChanged) {
+      clear_folder_exclusion_cache();
+      clear_exclusion_status_cache();
+      clear_excluded_note_ids_cache();
+    }
     if (excludedFoldersChanged && runtime.settings.notes_db_in_user_data) {
       const modelId = resolve_embedding_model_id(runtime.settings);
       if (modelId) {

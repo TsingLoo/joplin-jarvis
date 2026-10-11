@@ -8,6 +8,7 @@ import { split_by_tokens, preprocess_query, clearApiResponse, clearObjectReferen
 import { decompose_query } from '../notes/queryDecomposition';
 import { keyword_rerank } from '../notes/hybridSearch';
 import { maxsim_search } from '../notes/searchOrchestration';
+import { get_cached_exclusion_status } from '../notes/exclusion';
 import { getLogger } from '../utils/logger';
 
 const log = getLogger();
@@ -103,6 +104,15 @@ export async function chat_with_note_panel(
     throw new Error('Open a note to chat about it, or switch mode with Shift+Tab.');
   }
   try {
+    // Note mode sends the note body itself, so an excluded note must be
+    // refused here: the check that governs collection-wide retrieval does not
+    // cover this path.
+    const exclusion = await get_cached_exclusion_status(note, settings);
+    if (exclusion.excluded) {
+      throw new Error('This note is excluded from Jarvis, so its content was not sent to a model. ' +
+        'Remove the jarvis-exclude tag, or run "Include note in Jarvis" (Tools > Jarvis).');
+    }
+
     const title = note.title || 'Untitled';
     // bound the note by its own context budget (keeping the top when trimming)
     // so it never competes with the conversation for memory_tokens; neutralise

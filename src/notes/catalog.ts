@@ -3,6 +3,7 @@ import { ModelType } from 'api/types';
 import { getLogger } from '../utils/logger';
 import { delete_model_metadata, write_model_metadata, CatalogModelMetadata } from './catalogMetadataStore';
 import { clearApiResponse, clearObjectReferences } from '../utils';
+import { ensure_tag_id } from './tags';
 
 const log = getLogger();
 
@@ -13,13 +14,6 @@ const CATALOG_NOTE_TITLE = 'Jarvis Database Catalog';
 const CATALOG_TAG = 'jarvis-database';
 const REGISTRY_KEY = 'jarvis/v1/registry/models';
 const EXCLUDE_TAG = 'jarvis-exclude';
-
-type TagCacheEntry = {
-  id: string | null;
-  inflight: Promise<string> | null;
-};
-
-const tag_cache = new Map<string, TagCacheEntry>();
 
 // Prevent concurrent duplicate creations
 let inFlightCatalogCreation: Promise<string> | null = null;
@@ -548,58 +542,6 @@ async function update_catalog_body(catalogNoteId: string, registry: ModelRegistr
   await joplin.data.put(['notes', catalogNoteId], null, {
     body: `${catalog_body()}${table}`,
   });
-}
-
-/**
- * Resolve the provided tag identifier, creating it lazily when missing.
- */
-async function ensure_tag_id(tag_title: string): Promise<string> {
-  let cache_entry = tag_cache.get(tag_title);
-  if (!cache_entry) {
-    cache_entry = { id: null, inflight: null };
-    tag_cache.set(tag_title, cache_entry);
-  }
-  const entry = cache_entry;
-  if (entry.id) {
-    return entry.id;
-  }
-  if (entry.inflight) {
-    return entry.inflight;
-  }
-  entry.inflight = (async () => {
-    try {
-      const tag_search = await joplin.data.get(['tags'], { query: tag_title, fields: ['id', 'title'] });
-      const existing = tag_search.items?.find((t: any) => t.title === tag_title);
-      if (existing?.id) {
-        entry.id = existing.id;
-        return existing.id;
-      }
-    } catch (error) {
-      log.warn('Failed to query tag', { tag: tag_title, error });
-    }
-    try {
-      const created = await joplin.data.post(['tags'], null, { title: tag_title });
-      entry.id = created.id;
-      return created.id;
-    } catch (error) {
-      log.warn('Failed to create tag; retrying lookup', { tag: tag_title, error });
-      const verify_search = await joplin.data.get(['tags'], { query: tag_title, fields: ['id', 'title'] });
-      const fallback = verify_search.items?.find((t: any) => t.title === tag_title)?.id;
-      if (fallback) {
-        entry.id = fallback;
-        return fallback;
-      }
-      throw error;
-    }
-  })();
-  try {
-    const id = await entry.inflight;
-    entry.inflight = null;
-    return id;
-  } catch (error) {
-    entry.inflight = null;
-    throw error;
-  }
 }
 
 /**

@@ -11,7 +11,7 @@ import type { JarvisSettings } from '../ux/settings';
 import { getModelStats } from '../notes/modelStats';
 import { checkCapacityWarning, SimpleCorpusCache } from '../notes/embeddingCache';
 import { read_model_metadata } from '../notes/catalogMetadataStore';
-import { should_exclude_note } from '../notes/noteHelpers';
+import { get_note_exclusion } from '../notes/noteHelpers';
 import { RELEASE_NOTES } from '../ux/release';
 
 /** Last sweep failure message; shown in related notes panel until next successful sweep. */
@@ -595,7 +595,7 @@ export async function find_notes(model: TextEmbeddingModel, panel: string, expli
     const tagsResponse = await joplin.data.get(['notes', note.id, 'tags'], { fields: ['title'] });
     const noteTags = tagsResponse.items?.map((t: any) => t.title) || [];
     clearApiResponse(tagsResponse);
-    const exclusionResult = should_exclude_note(note, noteTags, settings,
+    const exclusionResult = await get_note_exclusion(note, noteTags, settings,
       { checkDeleted: true, checkTags: true });
     if (exclusionResult.excluded) {
       await update_panel(panel, [], settings, null,

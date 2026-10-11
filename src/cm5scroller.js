@@ -8,7 +8,9 @@ var createAutocompleteIndicator = autocomplete.createAutocompleteIndicator;
 
 function plugin(CodeMirror, context) {
   if (CodeMirror.cm6) { return; }
-  var options = { enabled: true, contextChars: 6000 };
+  // Starts off, like the default: the host reports the note's real state as soon
+  // as the indicator asks for it
+  var options = { enabled: false, contextChars: 6000, excluded: false, noteOverride: false };
 
   CodeMirror.defineInitHook(function(cm) {
     var timer = null;
@@ -28,8 +30,11 @@ function plugin(CodeMirror, context) {
       setStatus(options.enabled ? 'enabled' : 'disabled');
     });
 
+    // Kept as the named point where the editor reports its phase. The indicator
+    // stopped showing the phases: it is a switch now, and renders the sparkle or
+    // the slash from the options alone.
     function setStatus(state) {
-      status.set(state);
+      void state;
     }
     setStatus(options.enabled ? 'enabled' : 'disabled');
 
@@ -202,6 +207,11 @@ function plugin(CodeMirror, context) {
       clearTimer();
       clearSuggestion();
       setStatus(options.enabled ? 'enabled' : 'disabled');
+    });
+    // A different note is a different privacy verdict: re-ask rather than
+    // leaving the previous note's status on the indicator
+    cm.on('swapDoc', function() {
+      status.refreshOptions();
     });
     cm.on('unload', function() {
       destroyed = true;

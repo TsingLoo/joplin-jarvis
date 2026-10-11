@@ -1,3 +1,19 @@
+# Unreleased
+
+- added: **keep notes private** - excluding a note or notebook now means Jarvis never reads it. `Exclude note from Jarvis` adds the `jarvis-exclude` tag for you, `Exclude notebook from Jarvis (with its sub-notebooks)` covers a whole notebook, and the commands that send the open note's body (Chat, Chat with your notes, Autocomplete, Annotate, Edit) refuse an excluded note and say why instead of sending it
+- improved: the autocomplete indicator is a **plain switch**: one click turns suggestions off for the note, another turns them back on. The settings menu it used to open (enable checkbox, context-size slider) is gone - context size lives in the `Autocomplete: Maximum context characters` setting, and the checkbox was the same switch the click now performs
+- improved: hovering the indicator only shows the browser's own stable tooltip. The custom one is gone: the indicator changes state while typing, so a tooltip that follows it rewrote its own text under the pointer
+- improved: **automatic suggestions are off in a note until you ask for them there**. A note you have never switched on stays quiet however often you open it - it does not matter when it was created - and switching one on leaves the others alone. The indicator starts as a red slash and one click switches suggestions on for that note. `Autocomplete: Enable automatic suggestions in notes not opened before` is the opt-in for the opposite behaviour, and `Autocomplete: Enable automatic suggestions` is the master switch that silences the feature everywhere. An existing per-note choice is kept as it is
+- improved: **autocomplete on/off is remembered per note**. Switching it on while writing one note does not turn it on in every note
+- improved: the autocomplete indicator shows a **grey** slash on a note excluded from Jarvis, and it says **why** on hover: a note excluded by the `jarvis-exclude` tag explains the tag and can still be switched on for that note (taking effect once the tag is removed, so the user is not stuck), while a notebook exclusion points at the `Include notebook in Jarvis` command and a note in the trash or a conflict note simply has no switch. Red remains your own setting, which a click undoes
+- fixed: the slash in the autocomplete indicator was drawn off centre, because its SVG transform resolved its origin against the element's coordinate system rather than its own box
+- fixed: excluding a notebook now also covers the notebooks nested inside it, including ones created there later. Previously only the notebooks that existed when the command ran were added to the list, so a notebook created inside an excluded one was indexed again
+- fixed: notes carrying an exclusion tag could still appear in related notes and in "Chat with your notes" results when their embeddings were already in the index, either from before the tag was added or synced from another device. Tag exclusion is now applied when results are grouped, not only when candidates are collected
+- fixed: removing an exclusion tag took effect only after a restart, because the exclusion tag lookup was cached for the whole session
+- improved: the exclusion commands are now in the Tools/Jarvis menu for notes as well as notebooks, and report what they did
+
+---
+
 # [v0.14.2](https://github.com/alondmnt/joplin-plugin-jarvis/releases/tag/v0.14.2)
 *Released on 2026-09-05T07:39:25Z*
 

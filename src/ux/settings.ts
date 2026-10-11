@@ -1,6 +1,7 @@
 import joplin from 'api';
 import { SettingItemType } from 'api/types';
 import prompts = require('../assets/prompts.json');
+import { expand_folder_subtree, parse_excluded_folders } from '../notes/folderExclusion';
 
 export const ref_notes_prefix = 'Ref notes:';
 export const search_notes_cmd = 'Search:';
@@ -271,7 +272,7 @@ export async function get_settings(): Promise<JarvisSettings> {
 
     // computed / parsed
     max_tokens,
-    notes_exclude_folders: new Set((v['notes_exclude_folders'] as string).split(',').map(s => s.trim())),
+    notes_exclude_folders: parse_excluded_folders(v['notes_exclude_folders']),
     notes_device_profile: rawProfileSetting,
     notes_device_profile_effective: effectiveProfile,
     notes_device_platform: detectedPlatform,
@@ -1000,12 +1001,20 @@ export async function register_settings() {
       description: 'Optional template for inline suggestions and the "Auto-complete with Jarvis" command. Available tokens: {context} (note context at the cursor or current note content), {placeholder} (continuation marker). Default: empty.',
     },
     'autocomplete_enabled': {
-      value: true,
+      value: false,
       type: SettingItemType.Bool,
       section: 'jarvis.annotate',
       public: true,
       label: 'Autocomplete: Enable automatic suggestions',
-      description: 'Show inline autocomplete suggestions while writing. Default: true.',
+      description: 'Master switch for inline suggestions. With this off, Jarvis never suggests inline, in any note. Default: false.',
+    },
+    'autocomplete_enable_untouched_notes': {
+      value: false,
+      type: SettingItemType.Bool,
+      section: 'jarvis.annotate',
+      public: true,
+      label: 'Autocomplete: Enable automatic suggestions in notes not opened before',
+      description: 'A note is left quiet until you switch suggestions on in it by clicking the editor indicator. Turn this on to have notes you have not opened before start with suggestions enabled instead. Default: false.',
     },
     'autocomplete_context_chars': {
       value: 6000,
@@ -1203,8 +1212,17 @@ export async function register_settings() {
       section: 'jarvis.notes',
       public: true,
       advanced: true,
-      label: 'Notes: Folders to exclude from note DB',
-      description: 'Comma-separated list of folder IDs.',
+      label: 'Notes: Notebooks to exclude from note DB',
+      description: 'Comma-separated list of notebook IDs. Notes in these notebooks, and in any notebook nested inside them, are never indexed, searched or sent to a model. Prefer the "Exclude notebook from Jarvis" command, which keeps this list up to date, and the jarvis-exclude tag, which also syncs between devices.',
+    },
+    'autocomplete_note_overrides': {
+      value: '{}',
+      type: SettingItemType.String,
+      section: 'jarvis.annotate',
+      public: false,
+      advanced: true,
+      label: 'Autocomplete: per-note on/off (internal)',
+      description: 'Internal map of note ID to whether autocomplete is enabled in that note, set by the indicator in the editor. Do not modify.',
     },
     'notes_panel_title': {
       value: 'RELATED NOTES',
@@ -1466,27 +1484,97 @@ export async function set_model_last_full_sweep_time(modelId: string, timestamp:
   console.debug('Jarvis: saved model last full sweep time', { modelId, timestamp: new Date(timestamp).toISOString() });
 }
 
+/**
+ * Autocomplete on/off per note.
+ *
+ * The global `autocomplete_enabled` setting is only the default: a note the
+ * user switched off stays off, and a note switched on stays on, when moving
+ * between notes. Notes never touched fall back to the setting, so the setting
+ * still works as "default for everything".
+ */
+export type AutocompleteNoteOverrides = Record<string, boolean>;
+
+function safe_parse_autocomplete_overrides(raw: unknown): AutocompleteNoteOverrides {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return Object.fromEntries(
+        Object.entries(parsed).filter(([key, value]) => key.length > 0 && typeof value === 'boolean'),
+      ) as AutocompleteNoteOverrides;
+    }
+    return {};
+  } catch (error) {
+    console.warn('Jarvis: failed to parse per-note autocomplete settings; resetting');
+    return {};
+  }
+}
+
+export async function get_autocomplete_note_overrides(): Promise<AutocompleteNoteOverrides> {
+  return safe_parse_autocomplete_overrides(await joplin.settings.value('autocomplete_note_overrides'));
+}
+
+/** The note's own autocomplete setting, or undefined when it follows the default. */
+export function autocomplete_for_note(
+  overrides: AutocompleteNoteOverrides,
+  note_id: string | null | undefined,
+  untouched_default: boolean,
+): boolean {
+  if (note_id && note_id in overrides) {
+    return overrides[note_id];
+  }
+  return untouched_default;
+}
+
+/**
+ * The default for a note the user has not opened before: whichever of the two
+ * global settings is in force.
+ *
+ * Keeping this separate from `autocomplete_enabled` is what makes "off until
+ * asked" structural rather than a value someone can drift away from: a stored
+ * value can only turn the fallback on, and only by using the setting that says
+ * so in its name.
+ */
+export function autocomplete_default_for_untouched(settings: {
+  autocomplete_enabled?: boolean;
+  autocomplete_enable_untouched_notes?: boolean;
+}): boolean {
+  if (!settings?.autocomplete_enabled) {
+    return false;
+  }
+  return settings.autocomplete_enable_untouched_notes === true;
+}
+
+/** Remember autocomplete on/off for one note. Pass null to follow the default again. */
+export async function set_autocomplete_for_note(
+  note_id: string,
+  enabled: boolean | null,
+): Promise<AutocompleteNoteOverrides> {
+  const overrides = await get_autocomplete_note_overrides();
+  if (enabled === null) {
+    delete overrides[note_id];
+  } else {
+    overrides[note_id] = enabled;
+  }
+  await joplin.settings.setValue('autocomplete_note_overrides', JSON.stringify(overrides));
+  return overrides;
+}
+
+/**
+ * Exclude or include a notebook, and every notebook nested inside it.
+ *
+ * The descendants are written into the setting so the panel and the setting
+ * itself read as the full list, but correctness does not depend on that: the
+ * scan also matches notebook ancestry, so a notebook created inside an excluded
+ * one later is excluded without another command.
+ */
 export async function set_folders(exclude: boolean, folder_id: string, settings: JarvisSettings) {
   settings.notes_exclude_folders.delete('');  // left when settings field is empty
-  const T = await get_folder_tree();  // folderId: childrenIds
-  let q = ['root'];
-  let folder: string;
-  let found = false;
+  const subtree = await expand_folder_subtree(folder_id);
 
-  // breadth-first search
-  while (q.length) {
-    folder = q.shift();
-    if (folder_id == folder){
-      // restart queue and start accumulating
-      found = true;
-      q = [];
-    }
-    if (T.has(folder))
-      q.push(...T.get(folder));
-
-    if (!found)
-      continue
-
+  for (const folder of subtree) {
     if (exclude) {
       settings.notes_exclude_folders.add(folder);
     } else {
@@ -1498,28 +1586,3 @@ export async function set_folders(exclude: boolean, folder_id: string, settings:
     Array(...settings.notes_exclude_folders).toString());
 }
 
-async function get_folder_tree(): Promise<Map<string, string[]>> {
-  let T = new Map() as Map<string, string[]>;  // folderId: childrenIds
-  let pageNum = 1;
-  let hasMore = true;
-
-  while (hasMore) {
-    const { items, has_more } = await joplin.data.get(
-      ['folders'], { page: pageNum++ });
-    hasMore = has_more;
-
-    for (const folder of items) {
-      if (!folder.id)
-        continue
-      if (!folder.parent_id)
-        folder.parent_id = 'root';
-
-      if (!T.has(folder.parent_id)) {
-        T.set(folder.parent_id, [folder.id]);
-      } else {
-        T.get(folder.parent_id).push(folder.id);
-      }
-    }
-  }
-  return T;
-}

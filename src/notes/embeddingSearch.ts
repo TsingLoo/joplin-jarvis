@@ -16,6 +16,7 @@ import { quantize_vector_to_q8, cosine_similarity_q8 } from './q8';
 import { TopKHeap } from './topK';
 import { SimpleCorpusCache } from './embeddingCache';
 import { get_excluded_note_ids_by_tags, should_exclude_note } from './noteHelpers';
+import { find_excluded_folders } from './folderExclusion';
 import { calc_mean_embedding, calc_mean_embedding_float32, calc_links_embedding, calc_similarity } from './embeddingHelpers';
 import { ensure_model_error, promptEmbeddingError, MAX_EMBEDDING_RETRIES } from './embeddingUpdate';
 import type { BlockEmbedding, NoteEmbedding } from './embeddings';
@@ -79,6 +80,8 @@ async function get_candidate_note_ids(
   current_id: string,
 ): Promise<Set<string>> {
   const excludedByTag = await get_excluded_note_ids_by_tags();
+  const excludedFolders = await find_excluded_folders(
+    settings.notes_exclude_folders ?? new Set<string>());
   const allNoteIds = new Set<string>();
   let page = 1;
 
@@ -97,7 +100,7 @@ async function get_candidate_note_ids(
         note,
         [],  // No tags array needed (using reverse-lookup instead)
         settings,
-        { checkDeleted: true, checkTags: true, excludedByTag }
+        { checkDeleted: true, checkTags: true, excludedByTag, excludedFolders }
       );
 
       if (!result.excluded) {
@@ -477,7 +480,7 @@ export async function find_nearest_notes(embeddings: BlockEmbedding[], current_i
 
 /**
  * Group scored blocks by note, aggregate similarities, fetch titles,
- * and apply folder exclusion. Blocks must have .similarity set.
+ * and apply exclusion (notebooks and tags). Blocks must have .similarity set.
  *
  * @param blocks - scored blocks with .similarity set
  * @param settings - plugin settings (aggregation method, max hits, exclusions)
@@ -521,6 +524,20 @@ export async function group_by_notes(
   const fetchLimit = hasExcludedFolders
     ? Math.min(notesWithScores.length, settings.notes_max_hits + 5)
     : settings.notes_max_hits;
+
+  // Resolve excluded notebooks, including notebooks nested inside an excluded
+  // one, so a note that was indexed before its notebook was excluded (or that
+  // synced in from a device without this setting) cannot be returned here.
+  // Resolved once for the whole result page, not once per note.
+  const excludedFolders = hasExcludedFolders
+    ? await find_excluded_folders(settings.notes_exclude_folders)
+    : undefined;
+
+  // Tag exclusion is checked here as well, not only when the candidate list is
+  // built: the in-memory corpus can still hold blocks for a note that was
+  // tagged (or synced in already tagged) since it was last indexed.
+  const excludedByTag = await get_excluded_note_ids_by_tags();
+
   const result = (await Promise.all(notesWithScores.slice(0, fetchLimit).map(async ({note_id, sorted_embed, agg_sim}) => {
     let title: string;
     let noteResponse: any = null;
@@ -534,7 +551,7 @@ export async function group_by_notes(
         noteResponse,
         undefined,
         settings,
-        { checkDeleted: true, checkTags: false }
+        { checkDeleted: true, checkTags: true, excludedByTag, excludedFolders }
       );
 
       if (result.excluded) {

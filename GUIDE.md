@@ -258,3 +258,39 @@ When chatting with your notes, Jarvis will look for note excerpts that are seman
 |      `Search:` |   The following Joplin search query will<br>be used to search for related notes<br>(in addition to semantic search), and<br>search keywords must appear in the<br>selected context |                               No |                               Yes |
 |     `Context:` |   The following text will be the one<br>used to semantically search for related<br>notes instead of the entire note |                               No |                               Yes |
 | `Not Context:` | The following text will be excluded<br>from semantic search (e.g., it can be used<br>to define Jarvis' role), but the rest of the<br> conversation will still be used |                              Yes |                                No |
+
+## Keep notes private (exclude from Jarvis)
+
+Jarvis reads your notes for the note DB, for related notes, and as context in "Chat with your notes". If some notes should never be read, indexed or sent to a model - a private notebook, a journal, work notes on a client - exclude them. An excluded note is not indexed, not returned by related notes or note-based chat, and not accepted by the commands that send the open note's body (Chat, Autocomplete, Annotate, Edit): those report that the note is excluded instead of sending it.
+
+Two ways to exclude, and you can use either:
+
+**1. Exclude a note or a notebook from the Jarvis menu**
+
+Open the note, or select the notebook in the notebook list, then pick the command under `Tools --> Jarvis`:
+
+| Command | Effect |
+|---------|--------|
+| `Exclude note from Jarvis` | Adds the tag `jarvis-exclude` to the open note |
+| `Include note in Jarvis` | Removes that tag |
+| `Exclude notebook from Jarvis (with its sub-notebooks)` | Excludes the notebook and every notebook inside it |
+| `Include notebook in Jarvis (with its sub-notebooks)` | Includes them again |
+
+An excluded notebook stays excluded when you add a notebook inside it later, and the exclusion applies to a note as long as it is anywhere in that subtree, however deeply nested.
+
+**2. Add the `jarvis-exclude` tag yourself**
+
+Add the tag `jarvis-exclude` to any note in Joplin's UI - the same thing the command does. `exclude.from.jarvis` works too, and is kept for notes tagged by older versions. This is the only way to mark a notebook from Joplin's UI, since Joplin tags notes, not notebooks: tag one note in the notebook and exclude the notebook itself from the Jarvis menu.
+
+Notes:
+
+- Exclusion travels with your notes, not with your device: tags sync, so a note excluded on one device is excluded on all of them. The notebook exclusion list is a plugin setting, so after excluding a notebook on one device, exclude it on the others too - or tag the notes themselves.
+- Inline autocomplete stays quiet until you ask for it: click the indicator (the sparkle or slashed circle in the corner of the editor) to switch suggestions on for the note you are writing, and click again to stop them. The choice is kept per note, so a note you have never switched on stays quiet however often you come back to it, and switching one on does not change the others.
+- If you would rather have notes you open for the first time start with suggestions enabled, set `Autocomplete: Enable automatic suggestions in notes not opened before`. `Autocomplete: Enable automatic suggestions` is the master switch: with it off, Jarvis never suggests inline, in any note.
+- The autocomplete indicator in the editor tells the two apart, and says why on hover: a **red** slash means automatic suggestions are off for this note (click it to turn them on), while a **grey** slash means the note is excluded. A note excluded by the `jarvis-exclude` tag can still be switched on for that note - the switch is remembered and takes effect once you remove the tag - whereas a notebook exclusion points you at `Include notebook in Jarvis` and a note in the trash or a conflict note has no switch at all.
+- Excluding is immediate for search and chat. Notes that were already indexed keep their embeddings until the next note DB update, which removes them; they are filtered from search results in the meantime. Run `Update Jarvis note DB` to clean up right away.
+- If you use `Store embeddings in note properties`, the removal keeps the embeddings inside excluded notes rather than deleting them, in case another device still needs them. They stay filtered from search on this device.
+- To re-index an included notebook or note, run `Update Jarvis note DB`.
+- The `Notes: Notebooks to exclude from note DB` setting holds the same notebook IDs, comma-separated, and accepts notebook IDs copied from another source. Prefer the commands, which keep it up to date.
+
+

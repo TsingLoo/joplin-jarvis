@@ -1,5 +1,5 @@
 import type { ContentScriptContext, MarkdownEditorContentScriptModule } from 'api/types';
-import { EditorSelection, Prec, StateEffect, StateField } from '@codemirror/state';
+import { EditorSelection, EditorState, Prec, StateEffect, StateField } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, WidgetType, keymap } from '@codemirror/view';
 import {
 	MAX_AUTOCOMPLETE_MESSAGE_CHARS,
@@ -56,7 +56,7 @@ const autocompleteContextField = StateField.define<Array<{ from: number; to: num
 		: Decoration.none),
 });
 
-function createInlineAutocompletePlugin(context: ContentScriptContext, editorControl: any, options: { enabled: boolean; contextChars: number }) {
+function createInlineAutocompletePlugin(context: ContentScriptContext, editorControl: any, options: { enabled: boolean; contextChars: number; excluded?: boolean }) {
 	return ViewPlugin.fromClass(class {
 		private timer: ReturnType<typeof setTimeout> | null = null;
 		private requestVersion = 0;
@@ -65,6 +65,8 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 		private pendingDocumentText: string | null = null;
 		private activeRequestId: string | null = null;
 		private waitingForCompositionEnd = false;
+		/** Note the indicator's exclusion status was last fetched for. */
+		private indicatorNoteId: string | null = null;
 		private status: ReturnType<typeof createAutocompleteIndicator>;
 		private compositionEndHandler = () => {
 			if (!this.waitingForCompositionEnd) return;
@@ -85,10 +87,23 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 			this.status = createAutocompleteIndicator(view.dom, context, options, () => this.optionsChanged());
 			view.dom.addEventListener('compositionend', this.compositionEndHandler);
 			this.setStatus(options.enabled ? 'enabled' : 'disabled');
+			// Fetch the options for the note already open, before any edit: the
+			// indicator needs the exclusion status to decide whether its menu
+			// may open at all, and the note ID so the host can answer with this
+			// note's own autocomplete switch
+			this.indicatorNoteId = this.noteId(view.state);
+			this.status.refreshOptions(this.indicatorNoteId);
 		}
 
-		private setStatus(state: 'enabled' | 'disabled' | 'waiting' | 'requesting' | 'ready') {
-			this.status.set(state);
+		/**
+		 * Kept as the named point where the editor reports its phase (waiting,
+		 * requesting, ready). The indicator stopped showing them: it is a switch
+		 * now, so it renders the sparkle or the slash from the options alone,
+		 * and watching a spinner while typing was the "text jumping" the
+		 * animated states caused.
+		 */
+		private setStatus(_state: 'enabled' | 'disabled' | 'waiting' | 'requesting' | 'ready') {
+			// no-op: the indicator derives its appearance from the options
 		}
 
 		private optionsChanged() {
@@ -101,7 +116,31 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 			this.setStatus(options.enabled ? 'enabled' : 'disabled');
 		}
 
+		private noteId(state: EditorState): string | null {
+			try {
+				const facet = editorControl?.joplinExtensions?.noteIdFacet;
+				return facet ? (state.facet(facet) ?? null) : null;
+			} catch {
+				// Older Joplin versions may not expose the note ID facet.
+				return null;
+			}
+		}
+
+		/**
+		 * Ask the plugin for the current note's options when the open note
+		 * changes. Whether a note is excluded decides not just what the
+		 * indicator looks like but whether its menu may open at all, so it
+		 * cannot go stale while the editor stays mounted.
+		 */
+		private refreshIndicatorForNote(view: EditorView) {
+			const noteId = this.noteId(view.state);
+			if (noteId === this.indicatorNoteId) return;
+			this.indicatorNoteId = noteId;
+			this.status.refreshOptions(noteId);
+		}
+
 		update(update: any) {
+			this.refreshIndicatorForNote(update.view);
 			if (!options.enabled) {
 				if (update.docChanged || update.selectionSet) {
 					this.cancelPending();
@@ -213,14 +252,10 @@ function createInlineAutocompletePlugin(context: ContentScriptContext, editorCon
 			const contextRanges = [{ from: contextStart, to: cursor }];
 			if (suffix.trim()) contextRanges.push({ from: cursor, to: cursor + suffix.length });
 			this.view.dispatch({ effects: setAutocompleteContext.of(contextRanges) });
-			let noteId: string | undefined;
-			try {
-				const facet = editorControl?.joplinExtensions?.noteIdFacet;
-				if (facet) noteId = state.facet(facet);
-			} catch { /* Older Joplin versions may not expose the note ID facet. */ }
+			const noteId = this.noteId(state);
 
 			try {
-				const result = await context.postMessage({ type: 'jarvis.inlineAutocomplete', prefix, suffix, noteId, requestId, contextChars: options.contextChars });
+				const result = await context.postMessage({ type: 'jarvis.inlineAutocomplete', prefix, suffix, noteId: noteId ?? undefined, requestId, contextChars: options.contextChars });
 				if (this.activeRequestId === requestId) this.activeRequestId = null;
 				if (this.destroyed || version !== this.requestVersion) return;
 				this.clearRequestContext();
@@ -274,7 +309,10 @@ export default (context: ContentScriptContext): MarkdownEditorContentScriptModul
 	return {
 		plugin: (editorControl: any) => {
 			if (!editorControl.cm6) { return; }
-			const options = { enabled: true, contextChars: 6000 };
+			// Starts off, like the default: the host reports the note's real
+			// state as soon as the indicator asks for it, and showing the
+			// sparkle first would advertise suggestions the note may not want
+			const options = { enabled: false, contextChars: 6000, excluded: false, noteOverride: false };
 			const autocompletePlugin = createInlineAutocompletePlugin(context, editorControl, options);
 			editorControl.addExtension([
 				inlineSuggestionField,

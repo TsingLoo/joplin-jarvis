@@ -5,10 +5,14 @@ import joplin from 'api';
 import { clearApiResponse } from '../utils';
 import { UserDataEmbStore } from './userDataStore';
 import { getLogger } from '../utils/logger';
+import { is_folder_excluded } from './folderExclusion';
 import type { JarvisSettings } from '../ux/settings';
 
 const log = getLogger();
 const ocrMergedFlag = Symbol('ocrTextMerged');
+
+/** Tags that mark a note as excluded from Jarvis. */
+export const EXCLUSION_TAGS = ['jarvis-exclude', 'exclude.from.jarvis'];
 
 /**
  * Get tags for a note. Returns empty array on error.
@@ -26,8 +30,11 @@ export async function get_note_tags(noteId: string): Promise<string[]> {
   }
 }
 
-// Cache for exclusion tag reverse-lookup (cleared per batch)
+// Caches for exclusion lookups. Both are filled lazily and dropped between
+// batches by clear_excluded_note_ids_cache(), so a long sweep pays for each
+// lookup once instead of once per note.
 let excludedNoteIdsCache: Set<string> | null = null;
+let exclusionObjectsCache: Array<{ id: string }> = [];
 
 /**
  * Get all note IDs with exclusion tags via reverse-lookup.
@@ -39,29 +46,16 @@ export async function get_excluded_note_ids_by_tags(): Promise<Set<string>> {
   }
 
   const excludedIds = new Set<string>();
-  const exclusionTags = ['jarvis-exclude', 'exclude.from.jarvis'];
+  if (exclusionObjectsCache.length === 0) {
+    exclusionObjectsCache = await get_exclusion_objects();
+  }
 
-  for (const tagTitle of exclusionTags) {
+  for (const item of exclusionObjectsCache) {
     try {
-      // Search for tag by title using query parameter (same pattern as catalog.ts:571)
-      const tagSearchResponse = await joplin.data.get(['tags'], {
-        query: tagTitle,
-        fields: ['id', 'title'],
-      });
-
-      // Find exact title match (query may return partial matches)
-      const tag = tagSearchResponse.items?.find((t: any) => t.title === tagTitle);
-      clearApiResponse(tagSearchResponse);
-
-      if (!tag?.id) {
-        // Tag doesn't exist
-        continue;
-      }
-
       // Fetch all notes with this tag ID (paginated)
       let page = 1;
       while (true) {
-        const notesResponse = await joplin.data.get(['tags', tag.id, 'notes'], {
+        const notesResponse = await joplin.data.get(['tags', item.id, 'notes'], {
           fields: ['id'],
           page,
           limit: 100,
@@ -78,7 +72,7 @@ export async function get_excluded_note_ids_by_tags(): Promise<Set<string>> {
         page++;
       }
     } catch (error) {
-      // Tag doesn't exist or fetch failed - continue silently
+      // Tag fetch failed - continue silently
     }
   }
 
@@ -91,6 +85,40 @@ export async function get_excluded_note_ids_by_tags(): Promise<Set<string>> {
  */
 export function clear_excluded_note_ids_cache(): void {
   excludedNoteIdsCache = null;
+}
+
+/**
+ * Resolve the exclusion tags to their objects, searching for each tag title.
+ *
+ * This is the expensive part of an exclusion lookup (one search per tag), so
+ * the result is cached separately from the note IDs: a search that reuses the
+ * note-ID cache still reuses the tags, and every lookup after the first pays
+ * only for the notes tagged with them.
+ */
+async function get_exclusion_objects(): Promise<Array<{ id: string }>> {
+  const objects: Array<{ id: string }> = [];
+
+  for (const tagTitle of EXCLUSION_TAGS) {
+    try {
+      // Search for tag by title using query parameter (same pattern as catalog.ts:571)
+      const tagSearchResponse = await joplin.data.get(['tags'], {
+        query: tagTitle,
+        fields: ['id', 'title'],
+      });
+
+      // Find exact title match (query may return partial matches)
+      const tag = tagSearchResponse.items?.find((t: any) => t.title === tagTitle);
+      clearApiResponse(tagSearchResponse);
+
+      if (tag?.id) {
+        objects.push({ id: tag.id });
+      }
+    } catch (error) {
+      // Tag doesn't exist or fetch failed - continue silently
+    }
+  }
+
+  return objects;
 }
 
 /**
@@ -150,27 +178,45 @@ export async function append_ocr_text_to_body(note: any): Promise<void> {
  * Check if a note should be excluded based on filtering criteria.
  * Handles undefined/null values gracefully.
  *
+ * Synchronous, so that a scan over thousands of notes does not turn every
+ * exclusion check into an await: the caller resolves the excluded-notebook
+ * ancestry once and passes the result in `excludedFolders`.
+ *
  * @param note - Note object with optional fields
  * @param noteTags - Array of tag titles for this note (can be undefined/null, treated as empty array)
  * @param settings - Jarvis settings containing excluded folders (can be undefined/partial)
  * @param options - Filtering options
  * @param options.checkDeleted - Whether to filter deleted notes (default: false)
  * @param options.checkTags - Whether to check exclusion tags (default: true)
+ * @param options.excludedByTag - Pre-fetched set of note IDs carrying an exclusion tag
+ * @param options.excludedFolders - Pre-resolved set of excluded folder IDs, including
+ *   notebooks nested inside an excluded one; defaults to the plain setting value
  * @returns Object with { excluded: boolean, reason?: string }
  */
 export type ExclusionReason = 'conflict' | 'folder' | 'tag' | 'deleted';
+
+export interface NoteExclusionOptions {
+  checkDeleted?: boolean;
+  checkTags?: boolean;
+  excludedByTag?: Set<string>;
+  excludedFolders?: Set<string>;
+}
 
 export function should_exclude_note(
   note: { id?: string; parent_id?: string; is_conflict?: boolean; deleted_time?: number },
   noteTags?: string[] | null,
   settings?: JarvisSettings | null,
-  options: { checkDeleted?: boolean; checkTags?: boolean; excludedByTag?: Set<string> } = {}
+  options: NoteExclusionOptions = {}
 ): { excluded: boolean; reason?: ExclusionReason } {
-  const { checkDeleted = false, checkTags = true, excludedByTag } = options;
+  const {
+    checkDeleted = false,
+    checkTags = true,
+    excludedByTag,
+    excludedFolders = settings?.notes_exclude_folders,
+  } = options;
 
   // Normalize inputs to handle undefined/null gracefully
   const tags = noteTags || [];
-  const excludedFolders = settings?.notes_exclude_folders;
 
   // Check conflict notes (always checked)
   if (note.is_conflict) {
@@ -190,7 +236,7 @@ export function should_exclude_note(
     }
 
     // Fall back to checking tags array (for compatibility with other flows)
-    if (tags.includes('jarvis-exclude') || tags.includes('exclude.from.jarvis')) {
+    if (tags.some(tag => EXCLUSION_TAGS.includes(tag))) {
       return { excluded: true, reason: 'tag' };
     }
   }
@@ -201,4 +247,37 @@ export function should_exclude_note(
   }
 
   return { excluded: false };
+}
+
+/**
+ * `should_exclude_note` with the notebook ancestry resolved for you.
+ *
+ * Use this when checking a handful of notes - the file being used right now -
+ * where one folder lookup is cheaper than tracking the tree yourself. Scans
+ * should call the synchronous version with `excludedFolders` resolved once.
+ */
+export async function get_note_exclusion(
+  note: { id?: string; parent_id?: string; is_conflict?: boolean; deleted_time?: number },
+  noteTags?: string[] | null,
+  settings?: JarvisSettings | null,
+  options: NoteExclusionOptions = {}
+): Promise<{ excluded: boolean; reason?: ExclusionReason }> {
+  const excludedFolders = options.excludedFolders ?? settings?.notes_exclude_folders;
+
+  // Conflict, tag and deleted checks do not depend on the folder tree, so a
+  // decisive answer here costs no API call at all.
+  const direct = should_exclude_note(note, noteTags, settings, {
+    ...options,
+    excludedFolders: new Set<string>(),
+  });
+  if (direct.excluded) {
+    return direct;
+  }
+
+  if (!note?.parent_id || !excludedFolders?.size) {
+    return { excluded: false };
+  }
+
+  const excludedByAncestry = await is_folder_excluded(note.parent_id, excludedFolders);
+  return excludedByAncestry ? { excluded: true, reason: 'folder' } : { excluded: false };
 }

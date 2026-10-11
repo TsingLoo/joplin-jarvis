@@ -16,6 +16,7 @@ import { UserDataEmbStore, EmbeddingSettings } from './userDataStore';
 import { prepare_user_data_embeddings } from './userDataIndexer';
 import { extract_embedding_settings_for_validation, settings_equal } from './validator';
 import { append_ocr_text_to_body, should_exclude_note, get_excluded_note_ids_by_tags, clear_excluded_note_ids_cache } from './noteHelpers';
+import { clear_folder_exclusion_cache, find_excluded_folders } from './folderExclusion';
 import type { BlockEmbedding } from './embeddings';
 import { calc_note_embeddings, calc_hash, userDataStore, preprocess_note_for_hashing } from './embeddings';
 import { delete_note_and_embeddings, insert_note_embeddings } from './db';
@@ -143,18 +144,21 @@ async function write_user_data_embeddings(
 
 async function update_note(note: any,
     model: TextEmbeddingModel, settings: JarvisSettings,
-    abortSignal: AbortSignal, force: boolean = false, catalogId?: string, excludedByTag?: Set<string>): Promise<UpdateNoteResult> {
+    abortSignal: AbortSignal, force: boolean = false, catalogId?: string, excludedByTag?: Set<string>,
+    excludedFolders?: Set<string>): Promise<UpdateNoteResult> {
   if (abortSignal.aborted) {
     throw new ModelError("Operation cancelled");
   }
 
   // Check exclusion using reverse-lookup (no per-note tag fetch!)
-  // This safety net handles exclusion before expensive embedding calculation
+  // This safety net handles exclusion before expensive embedding calculation.
+  // `excludedFolders` carries the notebook ancestry resolved by the caller, so
+  // a note inside an excluded notebook is caught here too.
   const exclusionResult = should_exclude_note(
     note,
     null,  // No tag array (using reverse-lookup instead)
     settings,
-    { checkDeleted: true, checkTags: true, excludedByTag }
+    { checkDeleted: true, checkTags: true, excludedByTag, excludedFolders }
   );
 
   if (exclusionResult.excluded) {
@@ -470,8 +474,10 @@ export async function update_embeddings(
   processedCount: number;
   failedNotes: string[];
 }> {
-  // Fetch excluded note IDs once for entire batch (with pagination)
+  // Fetch excluded note IDs once for entire batch (with pagination),
+  // and resolve which folders are excluded including nested notebooks once.
   const excludedByTag = await get_excluded_note_ids_by_tags();
+  const excludedFolders = await find_excluded_folders(settings.notes_exclude_folders ?? new Set<string>());
 
   const successfulNotes: Array<{ note: any; embeddings: BlockEmbedding[] }> = [];
   const skippedNotes: string[] = [];
@@ -489,7 +495,7 @@ export async function update_embeddings(
     let attempt = 0;
     while (!abortController.signal.aborted) {
       try {
-        const result = await update_note(note, model, settings, abortController.signal, force, catalogId, excludedByTag);
+        const result = await update_note(note, model, settings, abortController.signal, force, catalogId, excludedByTag, excludedFolders);
         successfulNotes.push({ note, embeddings: result.embeddings });
 
         // Track notes that were skipped due to matching hash and settings
@@ -613,6 +619,7 @@ export async function update_embeddings(
 
   // Clear excluded note IDs cache after batch
   clear_excluded_note_ids_cache();
+  clear_folder_exclusion_cache();
 
   return { settingsMismatches, totalRows, dim, processedCount, failedNotes: skippedNotes };
 }
