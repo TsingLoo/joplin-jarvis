@@ -524,6 +524,29 @@ async function register_content_scripts(runtime: PluginRuntime): Promise<void> {
         return await autocomplete_options(explicitNoteId);
       }
 
+      if (message?.type === 'jarvis.autocomplete.excludeNote') {
+        const noteId = await noteForMessage();
+        if (!noteId) {
+          return { excluded: false, failed: true };
+        }
+        // Excluding is idempotent, but the cached verdicts are not
+        try {
+          const note = await joplin.workspace.selectedNote();
+          const already = note?.id === noteId
+            ? (await get_cached_exclusion_status(note, runtime.settings)).excluded
+            : false;
+          if (!already) {
+            await exclude_note(noteId);
+          }
+          clear_exclusion_status_cache();
+          clear_excluded_note_ids_cache();
+          return await autocomplete_options(noteId);
+        } catch (error) {
+          runtime.log.warn('Failed to exclude note from the autocomplete indicator', error);
+          return { excluded: false, failed: true };
+        }
+      }
+
       if (message?.type !== 'jarvis.inlineAutocomplete' || typeof message.prefix !== 'string') {
         return { text: '' };
       }

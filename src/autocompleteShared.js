@@ -54,6 +54,9 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
       .jarvis-autocomplete-indicator[data-state=disabled] .slash{opacity:1;visibility:visible;transition-delay:0s}\
       .jarvis-autocomplete-indicator[data-state=excluded]{cursor:default}\
       .jarvis-autocomplete-indicator[data-state=excluded] .slash{opacity:1;visibility:visible;transition-delay:0s;stroke:#a8a8a8}\
+      .jarvis-autocomplete-exclude{padding:3px 8px;border:1px solid rgba(255,138,128,.55);border-radius:11px;background:rgba(70,70,70,.85);color:#ffd9d4;font:11px/1.3 sans-serif;cursor:pointer;white-space:nowrap}\
+      .jarvis-autocomplete-exclude:hover{background:rgba(120,70,70,.9)}\
+      .jarvis-autocomplete-exclude[hidden]{display:none}\
       .jarvis-autocomplete-context{background:rgba(151,211,139,.12);text-decoration:underline;text-decoration-color:rgba(119,190,105,.72);text-decoration-thickness:1px;text-underline-offset:2px}\
       @keyframes jarvis-sparkle{0%,100%{transform:scale(.92)}50%{transform:scale(1.06)}}\
       @media(prefers-reduced-motion:reduce){.jarvis-autocomplete-indicator *{animation:none!important;transition:none!important}}';
@@ -61,15 +64,28 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
   }
   var root = doc.createElement('div');
   root.className = 'jarvis-autocomplete-root';
+  root.style.display = 'flex';
+  root.style.alignItems = 'center';
+  root.style.gap = '6px';
+  var excludeButton = doc.createElement('button');
+  excludeButton.type = 'button';
+  excludeButton.className = 'jarvis-autocomplete-exclude';
+  excludeButton.textContent = '隐私：排除此笔记';
+  excludeButton.title = '给这篇笔记加上 jarvis-exclude 标签，Jarvis 将不再读取它';
+  excludeButton.setAttribute('aria-label', '将这篇笔记排除出 Jarvis');
+  excludeButton.hidden = true;
   var element = doc.createElement('button');
   element.type = 'button';
   element.className = 'jarvis-autocomplete-indicator';
   element.setAttribute('aria-label', '自动补全');
   element.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle class="ring waiting-ring" cx="12" cy="12" r="8.5"/><circle class="ring request-ring" cx="12" cy="12" r="8.5"/><path class="sparkle" d="M12 2.8l2.25 6.95L21.2 12l-6.95 2.25L12 21.2l-2.25-6.95L2.8 12l6.95-2.25L12 2.8z"/><path class="check" d="M6.5 12.4l3.6 3.4 7.6-8"/><path class="slash" d="M5 5l14 14"/></svg>';
+  root.appendChild(excludeButton);
   root.appendChild(element);
   container.appendChild(root);
   /** False until the first getOptions answer arrives; until then a click has nothing to toggle. */
   var optionsReady = false;
+  /** Reveal timer for the exclude button; see setExcludeRevealed(). */
+  var excludeRevealTimer = null;
   /** The note every message is about; the host keeps the switch per note. */
   var noteId = null;
   function isExcluded() {
@@ -131,7 +147,54 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
     element.title = currentTitle();
     element.setAttribute('aria-pressed', options.enabled && !isExcluded() ? 'true' : 'false');
     element.setAttribute('aria-disabled', blockedByExclusion() ? 'true' : 'false');
+    // Offering to exclude a note that is already excluded (or is not usable at
+    // all) would be noise
+    if (!optionsReady || isExcluded()) {
+      hideExcludeButton();
+    }
   }
+  function hideExcludeButton() {
+    if (excludeRevealTimer) {
+      clearTimeout(excludeRevealTimer);
+      excludeRevealTimer = null;
+    }
+    excludeButton.hidden = true;
+  }
+  /**
+   * Reveal the exclude button shortly after the pointer arrives, not with it:
+   * the two buttons sit side by side, so appearing at once would put a
+   * one-click, tag-writing action under a pointer that only meant to hover, or
+   * was on its way to the on/off switch.
+   */
+  function setExcludeRevealed(revealed) {
+    if (excludeRevealTimer) {
+      clearTimeout(excludeRevealTimer);
+      excludeRevealTimer = null;
+    }
+    if (!revealed) {
+      excludeButton.hidden = true;
+      return;
+    }
+    if (!optionsReady || isExcluded()) return;
+    excludeRevealTimer = setTimeout(function() {
+      excludeRevealTimer = null;
+      if (optionsReady && !isExcluded()) {
+        excludeButton.hidden = false;
+      }
+    }, 250);
+  }
+  root.addEventListener('mouseenter', function() {
+    setExcludeRevealed(true);
+  });
+  root.addEventListener('mouseleave', function() {
+    setExcludeRevealed(false);
+  });
+  root.addEventListener('focusin', function() {
+    setExcludeRevealed(true);
+  });
+  root.addEventListener('focusout', function() {
+    setExcludeRevealed(false);
+  });
   function setOptions(result) {
     var previousEnabled = options.enabled;
     var previousExcluded = options.excluded;
@@ -172,10 +235,29 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
     context.postMessage({ type: 'jarvis.autocomplete.setEnabled', enabled: next, noteId: noteId })
       .then(setOptions).catch(function() { refreshOptions(); });
   });
+  excludeButton.addEventListener('click', function(event) {
+    event.stopPropagation();
+    if (!optionsReady || isExcluded()) return;
+    // The host writes the tag and answers with the note's state, which turns
+    // the indicator into the grey, unusable slash
+    excludeButton.disabled = true;
+    context.postMessage({ type: 'jarvis.autocomplete.excludeNote', noteId: noteId })
+      .then(function(result) {
+        excludeButton.disabled = false;
+        setOptions(result);
+        hideExcludeButton();
+      })
+      .catch(function() {
+        excludeButton.disabled = false;
+        hideExcludeButton();
+        refreshOptions();
+      });
+  });
   render();
   refreshOptions();
   return {
     remove: function() {
+      if (excludeRevealTimer) clearTimeout(excludeRevealTimer);
       root.remove();
     },
     // The content scripts still report their per-keystroke phases through the
