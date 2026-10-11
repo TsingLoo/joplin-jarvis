@@ -1,4 +1,4 @@
-# Unreleased
+# [v0.14.4](https://github.com/TsingLoo/joplin-jarvis/releases/tag/v0.14.4)
 
 - added: **keep notes private** - excluding a note or notebook now means Jarvis never reads it. `Exclude note from Jarvis` adds the `jarvis-exclude` tag for you, `Exclude notebook from Jarvis (with its sub-notebooks)` covers a whole notebook, and the commands that send the open note's body (Chat, Chat with your notes, Autocomplete, Annotate, Edit) refuse an excluded note and say why instead of sending it
 - improved: the autocomplete indicator is a **plain switch**: one click turns suggestions off for the note, another turns them back on. The settings menu it used to open (enable checkbox, context-size slider) is gone - context size lives in the `Autocomplete: Maximum context characters` setting, and the checkbox was the same switch the click now performs
