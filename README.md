@@ -73,14 +73,18 @@ The indicator always tells you where you stand: a **grey** slash means the note 
 
 The following table shows what is sent to the selected chat / notes models when running each command.
 
+In this fork, a note you exclude from Jarvis is sent nowhere at all, by any command: "Current note" and "Other note excerpts" below are what an *included* note sends. Cells marked 🔴 are where that difference applies. (Embeddings may run offline, in which case indexed note text never leaves your machine; see `Notes: Semantic similarity model`. Autocomplete keeps its own switch - nothing is generated for a note until you turn it on there.)
+
 | Command            | User prompt | Current note | Other note excerpts | All notes | Web articles |   Models    |
 |--------------------|:-----------:|:------------:|:-------------------:|:---------:|:------------:|:-----------:|
 | Ask Jarvis         |      x      |              |                     |           |              |    chat     |
-| Chat               |      x      |      x       |                     |           |              |    chat     |
-| Chat w/ notes      |      x      |      x       |          x          |           |              | chat, notes |
+| Chat               |      x      |     x 🔴     |                     |           |              |    chat     |
+| Chat w/ notes      |      x      |     x 🔴     |        x 🔴         |           |              | chat, notes |
 | Research           |      x      |              |                     |           |      x       |    chat     |
-| Edit               |      x      |              |                     |           |              |    chat     |
-| Autocomplete       |             |      x       |                     |           |              |    chat     |
-| Annotate note      |             |      x       |          x          |           |              | chat, notes |
-| Find related notes |             |      x       |                     |           |              |    notes    |
+| Edit               |      x      |     x 🔴     |                     |           |              |    chat     |
+| Autocomplete       |             |     x 🔴     |                     |           |              |    chat     |
+| Annotate note      |             |     x 🔴     |        x 🔴         |           |              | chat, notes |
+| Find related notes |             |     x 🔴     |                     |           |              |    notes    |
 | Update note DB     |             |              |                     |     x     |              |    notes    |
+
+🔴 marks a cell this fork changes: it is sent only when the note (or the notebook containing it) is not excluded, and the command refuses an excluded note outright rather than sending it. `Update note DB` indexes notes only, using the notes model, and skips excluded notes entirely.
