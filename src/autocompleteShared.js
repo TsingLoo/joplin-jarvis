@@ -40,7 +40,7 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
     var style = doc.createElement('style');
     style.id = 'jarvis-autocomplete-indicator-styles';
     style.textContent = '\
-      .jarvis-autocomplete-root{position:absolute;right:8px;bottom:6px;z-index:20;font:13px/1.4 sans-serif}\
+      .jarvis-autocomplete-root{position:absolute;right:8px;bottom:6px;z-index:20;font:13px/1.4 sans-serif;padding:28px 4px 0 16px}\
       .jarvis-autocomplete-indicator{width:28px;height:28px;padding:0;border:0;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(70,70,70,.72);box-shadow:0 1px 4px rgba(0,0,0,.2);cursor:pointer}\
       .jarvis-autocomplete-indicator svg{width:18px;height:18px;overflow:visible}\
       .jarvis-autocomplete-indicator .sparkle,.jarvis-autocomplete-indicator .ring,.jarvis-autocomplete-indicator .check,.jarvis-autocomplete-indicator .slash{opacity:0;visibility:hidden;transition:opacity .22s ease,transform .22s ease,visibility 0s linear .22s;transform-box:fill-box;transform-origin:center}\
@@ -54,7 +54,7 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
       .jarvis-autocomplete-indicator[data-state=disabled] .slash{opacity:1;visibility:visible;transition-delay:0s}\
       .jarvis-autocomplete-indicator[data-state=excluded]{cursor:default}\
       .jarvis-autocomplete-indicator[data-state=excluded] .slash{opacity:1;visibility:visible;transition-delay:0s;stroke:#a8a8a8}\
-      .jarvis-autocomplete-exclude{position:absolute;bottom:34px;right:2px;width:24px;height:24px;padding:0;border:1px solid rgba(255,138,128,.55);border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(70,70,70,.85);cursor:pointer}\
+      .jarvis-autocomplete-exclude{position:absolute;bottom:100%;right:4px;width:24px;height:24px;padding:0;border:1px solid rgba(255,138,128,.55);border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(70,70,70,.85);cursor:pointer}\
       .jarvis-autocomplete-exclude svg{width:14px;height:14px}\
       .jarvis-autocomplete-exclude:hover{background:rgba(120,70,70,.92)}\
       .jarvis-autocomplete-exclude[hidden]{display:none}\
