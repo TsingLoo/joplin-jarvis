@@ -54,8 +54,9 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
       .jarvis-autocomplete-indicator[data-state=disabled] .slash{opacity:1;visibility:visible;transition-delay:0s}\
       .jarvis-autocomplete-indicator[data-state=excluded]{cursor:default}\
       .jarvis-autocomplete-indicator[data-state=excluded] .slash{opacity:1;visibility:visible;transition-delay:0s;stroke:#a8a8a8}\
-      .jarvis-autocomplete-exclude{padding:3px 8px;border:1px solid rgba(255,138,128,.55);border-radius:11px;background:rgba(70,70,70,.85);color:#ffd9d4;font:11px/1.3 sans-serif;cursor:pointer;white-space:nowrap}\
-      .jarvis-autocomplete-exclude:hover{background:rgba(120,70,70,.9)}\
+      .jarvis-autocomplete-exclude{position:absolute;bottom:34px;right:2px;width:24px;height:24px;padding:0;border:1px solid rgba(255,138,128,.55);border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(70,70,70,.85);cursor:pointer}\
+      .jarvis-autocomplete-exclude svg{width:14px;height:14px}\
+      .jarvis-autocomplete-exclude:hover{background:rgba(120,70,70,.92)}\
       .jarvis-autocomplete-exclude[hidden]{display:none}\
       .jarvis-autocomplete-context{background:rgba(151,211,139,.12);text-decoration:underline;text-decoration-color:rgba(119,190,105,.72);text-decoration-thickness:1px;text-underline-offset:2px}\
       @keyframes jarvis-sparkle{0%,100%{transform:scale(.92)}50%{transform:scale(1.06)}}\
@@ -64,14 +65,13 @@ function createAutocompleteIndicator(container, context, options, onOptionsChang
   }
   var root = doc.createElement('div');
   root.className = 'jarvis-autocomplete-root';
-  root.style.display = 'flex';
-  root.style.alignItems = 'center';
-  root.style.gap = '6px';
   var excludeButton = doc.createElement('button');
   excludeButton.type = 'button';
   excludeButton.className = 'jarvis-autocomplete-exclude';
-  excludeButton.textContent = '隐私：排除此笔记';
-  excludeButton.title = '给这篇笔记加上 jarvis-exclude 标签，Jarvis 将不再读取它';
+  // A struck-through eye: the note stops being looked at. The button carries no
+  // text, so the meaning has to be in the icon and in the hover title.
+  excludeButton.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6z" fill="none" stroke="#ffd9d4" stroke-width="1.6"/><circle cx="12" cy="12" r="2.6" fill="#ffd9d4"/><path d="M4.5 19.5l15-15" stroke="#ffd9d4" stroke-width="1.8" stroke-linecap="round"/></svg>';
+  excludeButton.title = '排除此笔记：加上 jarvis-exclude 标签，Jarvis 将不再读取它';
   excludeButton.setAttribute('aria-label', '将这篇笔记排除出 Jarvis');
   excludeButton.hidden = true;
   var element = doc.createElement('button');
