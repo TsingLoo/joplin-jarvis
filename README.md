@@ -30,9 +30,32 @@ Community discussion: https://discourse.joplinapp.org/t/28316
 - **Text editing:**
     - Select a text to edit, run the command `Edit selection with Jarvis` and write your instructions in the pop-up window.
 
+## What this fork adds
+
+On top of upstream Jarvis, this fork gives you control over **what Jarvis is allowed to read**, and turns the autocomplete indicator into a switch you can trust.
+
+### Keep a note or notebook away from Jarvis
+
+An excluded note is never indexed, never returned as a related note or as chat context, and refused by the commands that would send it (`Chat`, `Chat with your notes`, `Autocomplete`, `Annotate`, `Edit`) - with a message saying why, instead of a silent send.
+
+| How | What it covers |
+|-----|----------------|
+| `Exclude note from Jarvis` / `Include note in Jarvis` (Tools/Jarvis) | The open note, via the `jarvis-exclude` tag |
+| `Exclude notebook from Jarvis (with its sub-notebooks)` / `Include notebook in Jarvis` | The selected notebook **and every notebook inside it**, including ones you create there later |
+| The round struck-through eye button that appears when you hover the editor indicator | The note you are writing, in one click |
+| Adding the `jarvis-exclude` tag yourself in Joplin | Any note, and it syncs with your notes across devices |
+
+The indicator always tells you where you stand: a **grey** slash means the note is excluded, and hovering says whether it is a tag (which you can still switch autocomplete on for), a notebook, the trash, or a conflict note. See [the guide](GUIDE.md#keep-notes-private-exclude-from-jarvis) for the details.
+
+### Autocomplete that stays quiet
+
+- **Per note, off until asked.** Suggestions do not appear until you click the indicator in that note. A note you never switched on stays quiet however often you open it, and switching one on leaves the others alone. `Autocomplete: Enable automatic suggestions in notes not opened before` opts into the opposite, and `Autocomplete: Enable automatic suggestions` is the master switch.
+- **One click, one switch.** The indicator is a plain toggle - no settings menu to open. Context size lives in `Autocomplete: Maximum context characters` where it belongs.
+- **A privacy shortcut on hover**, the round struck-through eye button, appears only after a short hover so a pointer passing by cannot tag a note by accident.
+
 ## Installation
 
-1. Install Jarvis from Joplin's plugin marketplace, or download it from [github](https://github.com/alondmnt/joplin-plugin-jarvis/releases).
+1. Install Jarvis from Joplin's plugin marketplace, or download this fork's build from [its releases](https://github.com/TsingLoo/joplin-jarvis/releases) (the `.jpl` file attached to the latest release).
 2. Select a model for chatting with Jarvis, and a model for indexing your notes. Depending on your choice of models to connect Jarvis with, you may need to setup an API key in the plugin settings for [OpenAI](https://platform.openai.com/account/api-keys), [Google AI](https://makersuite.google.com/app/apikey), [Hugging Face](https://huggingface.co/settings/tokens), or other supported services.
 3. To improve chat coherence, it may be helpful to increase `Memory tokens` in the settings, especially when chatting with your notes.
 4. For literature reviews, you can optionally add free API keys for [Scopus/Elsevier](https://dev.elsevier.com/) as an additional powerful search engine and paper repository, and [Springer](https://dev.springernature.com/) as another paper repository. It is recommended to try both Scopus and Semantic Scholar as each has its pros and cons.
